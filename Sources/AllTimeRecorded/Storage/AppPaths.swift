@@ -22,6 +22,18 @@ struct AppPaths {
         applicationSupportRoot.appendingPathComponent("meta", isDirectory: true)
     }
 
+    var modelsRoot: URL {
+        applicationSupportRoot.appendingPathComponent("models", isDirectory: true)
+    }
+
+    var transcriptsRoot: URL {
+        applicationSupportRoot.appendingPathComponent("transcripts", isDirectory: true)
+    }
+
+    var calendarRoot: URL {
+        applicationSupportRoot.appendingPathComponent("calendar", isDirectory: true)
+    }
+
     var eventsFileURL: URL {
         metaRoot.appendingPathComponent("events.jsonl", isDirectory: false)
     }
@@ -42,9 +54,11 @@ struct AppPaths {
     func ensureBaseDirectories() throws {
         try fileManager.createDirectory(at: audioRoot, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: metaRoot, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: modelsRoot, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: transcriptsRoot, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: calendarRoot, withIntermediateDirectories: true)
         if !fileManager.fileExists(atPath: eventsFileURL.path) {
             fileManager.createFile(atPath: eventsFileURL.path, contents: nil)
         }
     }
 }
-

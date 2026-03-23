@@ -29,6 +29,9 @@
 - 路径：
   - 音频：`~/Library/Application Support/AllTimeRecorded/audio/YYYY-MM-DD/*.m4a`
   - 事件：`~/Library/Application Support/AllTimeRecorded/meta/events.jsonl`
+- 每日整理：
+  - 当天录制中仍使用分段文件（更省电、容错更好）。
+  - 对“已结束日期”自动合并为 `daily-merged.m4a`，并清理当天分段碎片。
 
 ## 项目结构
 

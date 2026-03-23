@@ -1,24 +1,25 @@
+import AppKit
 import SwiftUI
 
 struct PopoverContentView: View {
     @ObservedObject var model: AppModel
+    var onOpenMainWindow: () -> Void = {}
     @State private var pulse = false
-
-    private let heatmapColumns = 24
-    private let heatmapSpacing: CGFloat = 2
 
     var body: some View {
         ZStack {
             GlassMaterialView()
+            Color.black.opacity(0.1)
             LinearGradient(
                 colors: [
-                    Color.black.opacity(0.12),
-                    Theme.neonCyan.opacity(0.06),
-                    Color.white.opacity(0.04)
+                    Color.white.opacity(0.02),
+                    Color.clear,
+                    Color.black.opacity(0.04)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
+            .blendMode(.softLight)
             VStack(alignment: .leading, spacing: 10) {
                 header
                 timeline
@@ -29,8 +30,16 @@ struct PopoverContentView: View {
         }
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.17), lineWidth: 1)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.34), Theme.neonCyan.opacity(0.18)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.9
+                )
         )
+        .shadow(color: Color.white.opacity(0.05), radius: 14, x: 0, y: 5)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .frame(width: 448, height: 258)
         .onAppear {
@@ -46,11 +55,25 @@ struct PopoverContentView: View {
                 Text("AllTimeRecorded")
                     .font(.system(.title3, design: .rounded).weight(.semibold))
                     .foregroundStyle(.white)
-                Text("Heatmap reflects voice activity per 15-minute bin")
+                Text("Open-lid audio, local text pickup")
                     .font(.system(.caption2, design: .rounded))
                     .foregroundStyle(.white.opacity(0.6))
             }
             Spacer()
+            Button(action: onOpenMainWindow) {
+                Image(systemName: "macwindow")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.84))
+                    .frame(width: 22, height: 22)
+                    .background(Color.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("Open Main Window")
+
             HStack(spacing: 8) {
                 Circle()
                     .fill(stateColor.opacity(pulse && model.snapshot.state == .recording ? 1 : 0.55))
@@ -60,53 +83,34 @@ struct PopoverContentView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(.black.opacity(0.2), in: Capsule())
+            .background(Color.black.opacity(0.14), in: Capsule())
             .overlay(
                 Capsule()
-                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
             )
             .foregroundStyle(stateColor)
         }
     }
 
     private var timeline: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            GeometryReader { geometry in
-                let cell = max(7, floor((geometry.size.width - CGFloat(heatmapColumns - 1) * heatmapSpacing) / CGFloat(heatmapColumns)))
-                let columns = Array(repeating: GridItem(.fixed(cell), spacing: heatmapSpacing), count: heatmapColumns)
-
-                LazyVGrid(columns: columns, spacing: heatmapSpacing) {
-                    ForEach(heatmapBins) { bin in
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(color(for: bin))
-                            .frame(width: cell, height: cell)
-                    }
-                }
-            }
-            .frame(height: 72)
-            .clipped()
-
-            HStack {
-                Text("00:00")
-                Spacer()
-                Text("06:00")
-                Spacer()
-                Text("12:00")
-                Spacer()
-                Text("18:00")
-                Spacer()
-                Text("24:00")
-            }
-            .font(.system(.caption2, design: .monospaced))
-            .foregroundStyle(.white.opacity(0.45))
+        HStack {
+            Spacer(minLength: 0)
+            TimelineHeatmapPanel(
+                bins: model.snapshot.bins,
+                state: model.snapshot.state,
+                arcs: []
+            )
+            Spacer(minLength: 0)
         }
     }
 
     private var statsRow: some View {
-        HStack(spacing: 8) {
-            statCard(title: "Recorded", value: model.recordedTodayLabel, tint: Theme.neonCyan)
-            statCard(title: "Gap", value: model.gapTodayLabel, tint: Theme.gapAmber)
-            statCard(title: "Free", value: model.freeSpaceLabel, tint: .white)
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(spacing: 8) {
+                statCard(title: "Recorded", value: model.recordedTodayLabel(at: context.date), tint: Theme.neonCyan)
+                statCard(title: "Gap", value: model.gapTodayLabel(at: context.date), tint: Theme.gapAmber)
+                statCard(title: "Free", value: model.freeSpaceLabel, tint: .white)
+            }
         }
     }
 
@@ -114,7 +118,7 @@ struct PopoverContentView: View {
         Text("Forced sleep can interrupt recording; app auto-resumes and paints the gap.")
             .font(.system(.caption2, design: .rounded))
             .lineLimit(2)
-            .foregroundStyle(.white.opacity(0.53))
+            .foregroundStyle(.white.opacity(0.62))
     }
 
     private func statCard(title: String, value: String, tint: Color) -> some View {
@@ -130,73 +134,10 @@ struct PopoverContentView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.black.opacity(0.15), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(Color.black.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.white.opacity(0.1), lineWidth: 1)
-        )
-    }
-
-    private var heatmapBins: [DayBin] {
-        let bins = model.snapshot.bins
-        guard bins.count == 96 else { return bins }
-
-        var ordered: [DayBin] = []
-        ordered.reserveCapacity(96)
-
-        for quarter in 0..<4 {
-            for hour in 0..<24 {
-                ordered.append(bins[hour * 4 + quarter])
-            }
-        }
-        return ordered
-    }
-
-    private func color(for bin: DayBin) -> Color {
-        switch model.snapshot.state {
-        case .pausedLowDisk:
-            if bin.status == .none { return Theme.idleGray }
-            return Theme.lowDiskRed.opacity(bin.status == .gap ? 0.72 : 0.95)
-        case .blockedNoPermission:
-            return bin.status == .none ? Theme.idleGray : Theme.gapAmber.opacity(0.85)
-        case .recording, .recovering:
-            switch bin.status {
-            case .recorded:
-                return heatColor(intensity: bin.recordingIntensity)
-            case .gap:
-                return Theme.gapAmber.opacity(0.9)
-            case .none:
-                return Theme.idleGray
-            }
-        }
-    }
-
-    private func heatColor(intensity: Double) -> Color {
-        let value = max(0, min(1, intensity))
-        let light = (r: 0.78, g: 0.97, b: 0.99)
-        let base = (r: 0.28, g: 0.90, b: 0.95)
-        let dark = (r: 0.05, g: 0.52, b: 0.58)
-
-        if value < 0.5 {
-            let t = value / 0.5
-            return mixedColor(from: light, to: base, t: t, alpha: 0.88)
-        }
-        let t = (value - 0.5) / 0.5
-        return mixedColor(from: base, to: dark, t: t, alpha: 0.96)
-    }
-
-    private func mixedColor(
-        from: (r: Double, g: Double, b: Double),
-        to: (r: Double, g: Double, b: Double),
-        t: Double,
-        alpha: Double
-    ) -> Color {
-        let clamped = max(0, min(1, t))
-        return Color(
-            red: from.r + (to.r - from.r) * clamped,
-            green: from.g + (to.g - from.g) * clamped,
-            blue: from.b + (to.b - from.b) * clamped,
-            opacity: alpha
+                .stroke(Color.white.opacity(0.18), lineWidth: 1)
         )
     }
 
@@ -212,5 +153,5 @@ struct PopoverContentView: View {
             return .white
         }
     }
-}
 
+}

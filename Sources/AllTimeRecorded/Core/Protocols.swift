@@ -17,3 +17,25 @@ protocol DiskGuardService: AnyObject {
     func checkFreeSpaceBytes() -> Int64
     func isBelowThreshold() -> Bool
 }
+
+@MainActor
+protocol CalendarOverlayProviding: AnyObject {
+    var currentEvents: [CalendarOverlayEvent] { get }
+    var currentArcs: [CalendarArcSegment] { get }
+    var sourceItems: [CalendarSourceItem] { get }
+    var systemAccessGranted: Bool { get }
+    func reload(for day: Date) async
+}
+
+@MainActor
+protocol ModelAssetManaging: AnyObject {
+    var modelID: String { get }
+    var state: ModelDownloadState { get }
+    func ensureModelReady() async
+}
+
+@MainActor
+protocol TranscriptionScheduling: AnyObject {
+    func start()
+    func stop()
+}

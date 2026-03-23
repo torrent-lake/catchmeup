@@ -7,6 +7,7 @@ final class DefaultRecordingService: NSObject, RecordingService, AVAudioRecorder
 
     private let paths: AppPaths
     private let eventStore: EventStore
+    private let dailyCompactor: DailyAudioCompactor
     private let powerAssertionService: PowerAssertionService
     private let diskGuardService: DefaultDiskGuardService
     private let inputDeviceMonitor: DefaultInputDeviceMonitor
@@ -28,10 +29,12 @@ final class DefaultRecordingService: NSObject, RecordingService, AVAudioRecorder
     private var state: RecorderState = .recovering
     private var freeBytesCache: Int64 = 0
     private var isRunning = false
+    private var lastCompactionAttempt: Date = .distantPast
 
     init(
         paths: AppPaths,
         eventStore: EventStore,
+        dailyCompactor: DailyAudioCompactor? = nil,
         powerAssertionService: PowerAssertionService,
         diskGuardService: DefaultDiskGuardService,
         inputDeviceMonitor: DefaultInputDeviceMonitor = DefaultInputDeviceMonitor(),
@@ -40,6 +43,7 @@ final class DefaultRecordingService: NSObject, RecordingService, AVAudioRecorder
     ) {
         self.paths = paths
         self.eventStore = eventStore
+        self.dailyCompactor = dailyCompactor ?? DailyAudioCompactor(audioRoot: paths.audioRoot, calendar: calendar)
         self.powerAssertionService = powerAssertionService
         self.diskGuardService = diskGuardService
         self.inputDeviceMonitor = inputDeviceMonitor
@@ -92,6 +96,7 @@ final class DefaultRecordingService: NSObject, RecordingService, AVAudioRecorder
         if !startNewSegment(closingGap: nil) {
             state = .recovering
         }
+        triggerDailyCompactionIfNeeded(force: true)
         publishSnapshot()
     }
 
@@ -203,6 +208,7 @@ final class DefaultRecordingService: NSObject, RecordingService, AVAudioRecorder
 
     private func maintenanceTick() {
         freeBytesCache = diskGuardService.checkFreeSpaceBytes()
+        triggerDailyCompactionIfNeeded(force: false)
 
         if state == .recording, diskGuardService.isBelowThreshold() {
             stop(reason: .lowDiskPause)
@@ -249,9 +255,9 @@ final class DefaultRecordingService: NSObject, RecordingService, AVAudioRecorder
 
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 22_050,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 24_000,
+            AVSampleRateKey: AppConstants.recordingSampleRate,
+            AVNumberOfChannelsKey: AppConstants.recordingChannels,
+            AVEncoderBitRateKey: AppConstants.recordingBitRate,
             AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue
         ]
 
@@ -412,6 +418,18 @@ final class DefaultRecordingService: NSObject, RecordingService, AVAudioRecorder
 
     private func publishSnapshot() {
         onSnapshot?(buildSnapshot())
+    }
+
+    private func triggerDailyCompactionIfNeeded(force: Bool) {
+        let now = Date()
+        if !force, now.timeIntervalSince(lastCompactionAttempt) < 30 * 60 {
+            return
+        }
+        lastCompactionAttempt = now
+        let compactor = dailyCompactor
+        Task(priority: .utility) {
+            await compactor.compactFinishedDays(referenceDate: now)
+        }
     }
 
     private func startMeteringLoop() {

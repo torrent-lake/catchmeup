@@ -11,6 +11,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sleepWakeMonitor: SleepWakeMonitor?
     private var recordingService: DefaultRecordingService?
     private var eventStore: EventStore?
+    private var calendarOverlayService: CalendarOverlayService?
+    private var modelAssetService: ModelAssetService?
+    private var transcriptionOrchestrator: TranscriptionOrchestrator?
     private var allowManualTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -21,6 +24,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let store = try EventStore(paths: paths)
             let diskGuard = DefaultDiskGuardService(paths: paths)
             let powerAssertionService = IOKitPowerAssertionService()
+            let calendarOverlay = CalendarOverlayService(
+                store: CalendarSourcesStore(paths: paths),
+                systemProvider: SystemCalendarProvider()
+            )
+            let modelAssets = ModelAssetService(paths: paths)
+            let transcription = TranscriptionOrchestrator(
+                paths: paths,
+                modelService: modelAssets
+            )
 
             let service = DefaultRecordingService(
                 paths: paths,
@@ -50,13 +62,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.eventStore = store
             self.recordingService = service
             self.sleepWakeMonitor = sleepMonitor
+            self.calendarOverlayService = calendarOverlay
+            self.modelAssetService = modelAssets
+            self.transcriptionOrchestrator = transcription
 
-            statusBarController = StatusBarController(model: model) { [weak self] in
+            statusBarController = StatusBarController(
+                model: model,
+                calendarService: calendarOverlay,
+                modelAssetService: modelAssets
+            ) { [weak self] in
                 self?.manualQuit()
             }
 
             registerLoginItemIfPossible()
             requestMicrophoneThenStart()
+            transcription.start()
         } catch {
             model.setState(.recovering)
         }
@@ -65,6 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         recordingService?.stop(reason: .userQuit)
         sleepWakeMonitor?.stop()
+        transcriptionOrchestrator?.stop()
         eventStore?.markCleanShutdown()
     }
 
@@ -87,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         allowManualTermination = true
         recordingService?.stop(reason: .userQuit)
         sleepWakeMonitor?.stop()
+        transcriptionOrchestrator?.stop()
         eventStore?.markCleanShutdown()
         NSApp.terminate(nil)
     }
@@ -105,4 +127,3 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
     }
 }
-

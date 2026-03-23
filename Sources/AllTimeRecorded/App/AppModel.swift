@@ -43,6 +43,21 @@ final class AppModel: ObservableObject {
     var gapTodayLabel: String {
         snapshot.gapSecondsToday.compactClock
     }
+
+    func recordedTodayLabel(at now: Date) -> String {
+        extrapolatedRecordedSeconds(at: now).compactClock
+    }
+
+    func gapTodayLabel(at now: Date) -> String {
+        snapshot.gapSecondsToday.compactClock
+    }
+
+    private func extrapolatedRecordedSeconds(at now: Date) -> TimeInterval {
+        guard snapshot.state == .recording else {
+            return snapshot.recordedSecondsToday
+        }
+        return snapshot.recordedSecondsToday + max(0, now.timeIntervalSince(snapshot.updatedAt))
+    }
 }
 
 private extension TimeInterval {
