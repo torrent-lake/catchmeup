@@ -78,15 +78,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.modelAssetService = modelAssets
             self.transcriptionOrchestrator = transcription
 
-            let queryService = LocalTranscriptSearchService(paths: paths)
-            let recallViewModel = RecallPanelViewModel(queryService: queryService)
-            let recallController = RecallPanelController(viewModel: recallViewModel)
+            // Phase 2 Slice 1+2: LLM + agent chat wiring. The agent chain is
+            // built once at launch and re-reads LLMEndpointConfig.snapshot()
+            // each time, so a `defaults write` to the base URL / api format
+            // / default model takes effect on the next app launch.
+            let anthropic = AnthropicClient()
+            let crossRef = CrossRefEngine()
+            let mailSource = MailDataSource(bridge: leann)
+            let agentSession = AgentSession(
+                llm: anthropic,
+                crossRef: crossRef,
+                defaultSources: [mailSource]
+            )
+            let agentChatViewModel = AgentChatViewModel(session: agentSession)
+            let recallController = RecallPanelController(viewModel: agentChatViewModel)
             self.recallPanelController = recallController
-
-            // Sync highlights from Recall panel to AppModel
-            recallViewModel.$highlightedTimeRanges
-                .receive(on: RunLoop.main)
-                .assign(to: &model.$highlightedTimeRanges)
 
             let controller = StatusBarController(
                 model: model,

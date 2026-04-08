@@ -67,6 +67,11 @@ final class StatusBarController: NSObject {
         action: #selector(handleDebugLeannProbe),
         keyEquivalent: ""
     )
+    private let debugClaudeProbeMenuItem = NSMenuItem(
+        title: "Debug: Probe Claude (relay health check)",
+        action: #selector(handleDebugClaudeProbe),
+        keyEquivalent: ""
+    )
 #endif
     private var cancellables: Set<AnyCancellable> = []
     private var localEventMonitor: Any?
@@ -94,8 +99,10 @@ final class StatusBarController: NSObject {
         menu.addItem(styleMenuItem)
 #if DEBUG
         debugLeannProbeMenuItem.target = self
+        debugClaudeProbeMenuItem.target = self
         menu.addItem(.separator())
         menu.addItem(debugLeannProbeMenuItem)
+        menu.addItem(debugClaudeProbeMenuItem)
 #endif
         menu.addItem(.separator())
         quitMenuItem.target = self
@@ -339,6 +346,45 @@ final class StatusBarController: NSObject {
             } catch {
                 alert.messageText = "LEANN probe failed"
                 alert.informativeText = error.localizedDescription
+                alert.alertStyle = .warning
+            }
+            alert.addButton(withTitle: "OK")
+            _ = alert.runModal()
+        }
+    }
+
+    @objc private func handleDebugClaudeProbe() {
+        Task { @MainActor in
+            let alert = NSAlert()
+            alert.messageText = "Claude probe"
+            alert.informativeText = "Sending health check to relay…"
+            let client = AnthropicClient()
+            let composer = PromptComposer()
+            let (system, user) = composer.compose(kind: .debugProbe, question: "ping", chunks: [])
+            do {
+                let response = try await client.complete(
+                    system: system,
+                    userMessage: user,
+                    model: nil,   // use defaultModel from config
+                    temperature: 0.0,
+                    maxTokens: 20
+                )
+                let body = """
+                Response text: \(response.text)
+                Model reported: \(response.modelReported ?? "—")
+                Input tokens: \(response.inputTokens.map(String.init) ?? "—")
+                Output tokens: \(response.outputTokens.map(String.init) ?? "—")
+                Stop reason: \(response.stopReason ?? "—")
+                Endpoint: \(LLMEndpointConfig.baseURL.absoluteString)
+                Format: \(LLMEndpointConfig.apiFormat.rawValue)
+                Default model: \(LLMEndpointConfig.defaultModel)
+                """
+                alert.messageText = "Claude probe OK"
+                alert.informativeText = body
+                alert.alertStyle = .informational
+            } catch {
+                alert.messageText = "Claude probe failed"
+                alert.informativeText = "\(error.localizedDescription)\n\nEndpoint: \(LLMEndpointConfig.baseURL.absoluteString)\nFormat: \(LLMEndpointConfig.apiFormat.rawValue)"
                 alert.alertStyle = .warning
             }
             alert.addButton(withTitle: "OK")

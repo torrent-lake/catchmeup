@@ -1,15 +1,19 @@
 import AppKit
 import SwiftUI
 
-/// Hosts the main glass window. Phase 1 pivot: the primary content is now
-/// `BriefingDashboardView` (CatchMeUp's new identity), not `MainDashboardView`
-/// (the recording-centric heatmap from AllTimeRecorded).
+/// Hosts the main glass window.
 ///
-/// The constructor still accepts the old set of dependencies so that
-/// `StatusBarController` can keep its call signature intact; the refs for
-/// `calendarService`, `modelAssetService`, `recallController`, and
-/// `onTranscribeNow` are stored for Phase 2+ reuse (pre-meeting briefs,
-/// agent chat, transcription controls).
+/// As of Phase 2 we're back to hosting `MainDashboardView` (the calendar/
+/// heatmap-centric layout inherited from AllTimeRecorded) as the primary
+/// content. The on-demand agent chat lives in the floating `RecallPanelController`
+/// overlay, not in the main window. This keeps the visual language the user
+/// already likes (the pulsing heatmap, the calendar arcs, the day navigator)
+/// and puts the LLM-powered Q&A behind a deliberate toggle rather than forcing
+/// it to share the primary surface.
+///
+/// Construction still accepts `leannBridge` for future Phase 3 wiring that
+/// will extend the dashboard with context-density overlays drawn from all
+/// indexed sources, not just recording activity.
 @MainActor
 final class MainGlassWindowController: NSWindowController {
     private let appModel: AppModel
@@ -41,13 +45,17 @@ final class MainGlassWindowController: NSWindowController {
             defer: false
         )
         let recall = recallController
-        let view = BriefingDashboardView(
+        let transcribeNow = onTranscribeNow
+        let view = MainDashboardView(
             appModel: appModel,
+            calendarService: calendarService,
+            modelAssetService: modelAssetService,
             showsWindowControls: true,
             onCloseWindow: { window.performClose(nil) },
             onMinimizeWindow: { window.miniaturize(nil) },
             onZoomWindow: { window.performZoom(nil) },
-            onToggleRecall: { recall.toggle() }
+            onToggleRecall: { recall.toggle() },
+            onTranscribeNow: transcribeNow
         )
         let hosting = NSHostingController(rootView: view)
         window.title = "CatchMeUp"
@@ -59,7 +67,7 @@ final class MainGlassWindowController: NSWindowController {
             window.titlebarSeparatorStyle = .none
         }
         window.isMovableByWindowBackground = true
-        window.minSize = NSSize(width: 560, height: 380)
+        window.minSize = NSSize(width: 560, height: 320)
         window.contentViewController = hosting
         window.contentView?.wantsLayer = true
         window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
@@ -68,7 +76,9 @@ final class MainGlassWindowController: NSWindowController {
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
 
-        window.setContentSize(NSSize(width: 680, height: 520))
+        // Match the original AllTimeRecorded content size — the heatmap
+        // layout is tuned for 680×420.
+        window.setContentSize(NSSize(width: 680, height: 420))
         window.center()
 
         super.init(window: window)
