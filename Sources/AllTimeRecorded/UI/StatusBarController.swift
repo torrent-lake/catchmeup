@@ -38,12 +38,36 @@ final class StatusBarController: NSObject {
     private let calendarService: CalendarOverlayService
     private let modelAssetService: ModelAssetService
     private let recallController: RecallPanelController
+    private let leannBridge: any LEANNBridging
     private let onQuit: () -> Void
     private let onTranscribeNow: () -> Void
+    private let onRecordingModeChanged: (RecordingMode) -> Void
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let panel = OverlayPanel(contentSize: NSSize(width: 448, height: 258))
+    private let modeGentleMenuItem = NSMenuItem(
+        title: "Recording: Gentle",
+        action: #selector(handleSelectGentleMode),
+        keyEquivalent: ""
+    )
+    private let modeManualMenuItem = NSMenuItem(
+        title: "Recording: Manual",
+        action: #selector(handleSelectManualMode),
+        keyEquivalent: ""
+    )
+    private let modeRogueMenuItem = NSMenuItem(
+        title: "Recording: Rogue",
+        action: #selector(handleSelectRogueMode),
+        keyEquivalent: ""
+    )
     private let styleMenuItem = NSMenuItem(title: "切换样式", action: #selector(handleCycleStyle), keyEquivalent: "")
     private let quitMenuItem = NSMenuItem(title: "退出并停止留存", action: #selector(handleQuit), keyEquivalent: "")
+#if DEBUG
+    private let debugLeannProbeMenuItem = NSMenuItem(
+        title: "Debug: Probe LEANN (mail_index, \"hello\")",
+        action: #selector(handleDebugLeannProbe),
+        keyEquivalent: ""
+    )
+#endif
     private var cancellables: Set<AnyCancellable> = []
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
@@ -54,12 +78,25 @@ final class StatusBarController: NSObject {
         calendarService: calendarService,
         modelAssetService: modelAssetService,
         recallController: recallController,
+        leannBridge: leannBridge,
         onTranscribeNow: onTranscribeNow
     )
     private lazy var contextMenu: NSMenu = {
         let menu = NSMenu()
+        modeGentleMenuItem.target = self
+        modeManualMenuItem.target = self
+        modeRogueMenuItem.target = self
+        menu.addItem(modeGentleMenuItem)
+        menu.addItem(modeManualMenuItem)
+        menu.addItem(modeRogueMenuItem)
+        menu.addItem(.separator())
         styleMenuItem.target = self
         menu.addItem(styleMenuItem)
+#if DEBUG
+        debugLeannProbeMenuItem.target = self
+        menu.addItem(.separator())
+        menu.addItem(debugLeannProbeMenuItem)
+#endif
         menu.addItem(.separator())
         quitMenuItem.target = self
         menu.addItem(quitMenuItem)
@@ -71,20 +108,39 @@ final class StatusBarController: NSObject {
         calendarService: CalendarOverlayService,
         modelAssetService: ModelAssetService,
         recallController: RecallPanelController,
+        leannBridge: any LEANNBridging,
         onTranscribeNow: @escaping () -> Void,
+        onRecordingModeChanged: @escaping (RecordingMode) -> Void,
         onQuit: @escaping () -> Void
     ) {
         self.model = model
         self.calendarService = calendarService
         self.modelAssetService = modelAssetService
         self.recallController = recallController
+        self.leannBridge = leannBridge
         self.onTranscribeNow = onTranscribeNow
+        self.onRecordingModeChanged = onRecordingModeChanged
         self.onQuit = onQuit
         self.currentStyle = StatusBarController.loadStyle()
         super.init()
         configureStatusItem()
         configurePanel()
         bindModel()
+        syncModeMenuCheckmarks(model.recordingMode)
+    }
+
+    /// Opens the main window programmatically (used by AppDelegate on launch to
+    /// reveal the new briefing dashboard identity).
+    func openMainWindow() {
+        let window = mainWindowController.window
+        if window?.isVisible == true {
+            return
+        }
+        mainWindowController.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        if let w = mainWindowController.window {
+            recallController.show(besideWindow: w)
+        }
     }
 
     private func configureStatusItem() {
@@ -95,7 +151,7 @@ final class StatusBarController: NSObject {
         button.target = self
         button.action = #selector(handleStatusItemClick(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        button.toolTip = "AllTimeRecorded"
+        button.toolTip = "CatchMeUp"
     }
 
     private func configurePanel() {
@@ -124,12 +180,25 @@ final class StatusBarController: NSObject {
                 self?.apply(snapshot: snapshot)
             }
             .store(in: &cancellables)
+
+        model.$recordingMode
+            .receive(on: RunLoop.main)
+            .sink { [weak self] mode in
+                self?.syncModeMenuCheckmarks(mode)
+            }
+            .store(in: &cancellables)
     }
 
     private func apply(snapshot: RecordingSnapshot) {
         lastSnapshot = snapshot
         renderCurrentIcon()
-        statusItem.button?.toolTip = "AllTimeRecorded · \(model.stateTitle)"
+        statusItem.button?.toolTip = "CatchMeUp · \(model.stateTitle)"
+    }
+
+    private func syncModeMenuCheckmarks(_ mode: RecordingMode) {
+        modeGentleMenuItem.state = (mode == .gentle) ? .on : .off
+        modeManualMenuItem.state = (mode == .manual) ? .on : .off
+        modeRogueMenuItem.state = (mode == .rogue)  ? .on : .off
     }
 
     @objc private func handleStatusItemClick(_ sender: NSStatusBarButton) {
@@ -237,10 +306,46 @@ final class StatusBarController: NSObject {
         renderCurrentIcon()
     }
 
+    @objc private func handleSelectGentleMode() {
+        onRecordingModeChanged(.gentle)
+    }
+
+    @objc private func handleSelectManualMode() {
+        onRecordingModeChanged(.manual)
+    }
+
+    @objc private func handleSelectRogueMode() {
+        onRecordingModeChanged(.rogue)
+    }
+
     @objc private func handleQuit() {
         hidePanel()
         onQuit()
     }
+
+#if DEBUG
+    @objc private func handleDebugLeannProbe() {
+        let bridge = leannBridge
+        Task { @MainActor in
+            let alert = NSAlert()
+            alert.messageText = "LEANN probe: mail_index"
+            alert.informativeText = "Running…"
+            do {
+                let raw = try await bridge.searchRaw(index: "mail_index", query: "hello", topK: 5)
+                let chunks = try await bridge.search(index: "mail_index", query: "hello", topK: 5)
+                alert.messageText = "LEANN probe OK — \(chunks.count) chunks"
+                alert.informativeText = String(raw.prefix(2000))
+                alert.alertStyle = .informational
+            } catch {
+                alert.messageText = "LEANN probe failed"
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .warning
+            }
+            alert.addButton(withTitle: "OK")
+            _ = alert.runModal()
+        }
+    }
+#endif
 
     private func renderCurrentIcon() {
         let image = StatusTimelineImageFactory.makeImage(

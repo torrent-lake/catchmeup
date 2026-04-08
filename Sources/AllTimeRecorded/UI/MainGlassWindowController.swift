@@ -1,12 +1,22 @@
 import AppKit
 import SwiftUI
 
+/// Hosts the main glass window. Phase 1 pivot: the primary content is now
+/// `BriefingDashboardView` (CatchMeUp's new identity), not `MainDashboardView`
+/// (the recording-centric heatmap from AllTimeRecorded).
+///
+/// The constructor still accepts the old set of dependencies so that
+/// `StatusBarController` can keep its call signature intact; the refs for
+/// `calendarService`, `modelAssetService`, `recallController`, and
+/// `onTranscribeNow` are stored for Phase 2+ reuse (pre-meeting briefs,
+/// agent chat, transcription controls).
 @MainActor
 final class MainGlassWindowController: NSWindowController {
     private let appModel: AppModel
     private let calendarService: CalendarOverlayService
     private let modelAssetService: ModelAssetService
     private let recallController: RecallPanelController
+    private let leannBridge: any LEANNBridging
     private let onTranscribeNow: () -> Void
 
     init(
@@ -14,12 +24,14 @@ final class MainGlassWindowController: NSWindowController {
         calendarService: CalendarOverlayService,
         modelAssetService: ModelAssetService,
         recallController: RecallPanelController,
+        leannBridge: any LEANNBridging,
         onTranscribeNow: @escaping () -> Void
     ) {
         self.appModel = appModel
         self.calendarService = calendarService
         self.modelAssetService = modelAssetService
         self.recallController = recallController
+        self.leannBridge = leannBridge
         self.onTranscribeNow = onTranscribeNow
 
         let window = NSWindow(
@@ -29,20 +41,16 @@ final class MainGlassWindowController: NSWindowController {
             defer: false
         )
         let recall = recallController
-        let transcribeNow = onTranscribeNow
-        let view = MainDashboardView(
+        let view = BriefingDashboardView(
             appModel: appModel,
-            calendarService: calendarService,
-            modelAssetService: modelAssetService,
             showsWindowControls: true,
             onCloseWindow: { window.performClose(nil) },
             onMinimizeWindow: { window.miniaturize(nil) },
             onZoomWindow: { window.performZoom(nil) },
-            onToggleRecall: { recall.toggle() },
-            onTranscribeNow: transcribeNow
+            onToggleRecall: { recall.toggle() }
         )
         let hosting = NSHostingController(rootView: view)
-        window.title = "AllTimeRecorded"
+        window.title = "CatchMeUp"
         window.isOpaque = false
         window.backgroundColor = .clear
         window.titlebarAppearsTransparent = true
@@ -51,7 +59,7 @@ final class MainGlassWindowController: NSWindowController {
             window.titlebarSeparatorStyle = .none
         }
         window.isMovableByWindowBackground = true
-        window.minSize = NSSize(width: 560, height: 320)
+        window.minSize = NSSize(width: 560, height: 380)
         window.contentViewController = hosting
         window.contentView?.wantsLayer = true
         window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
@@ -60,9 +68,7 @@ final class MainGlassWindowController: NSWindowController {
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
 
-        // Force the frame size after NSHostingController has been set,
-        // since it overrides contentRect with the SwiftUI intrinsic size.
-        window.setContentSize(NSSize(width: 680, height: 420))
+        window.setContentSize(NSSize(width: 680, height: 520))
         window.center()
 
         super.init(window: window)

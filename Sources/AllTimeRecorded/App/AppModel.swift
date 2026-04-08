@@ -5,6 +5,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var snapshot: RecordingSnapshot = .empty()
     @Published var highlightedTimeRanges: [DateInterval] = []
 
+    /// Current recording behavior mode. Mirrors `UserDefaults.recordingMode`.
+    /// Changes here should be driven by the `RecordingPolicy` swap in
+    /// `AppDelegate.applyRecordingMode(_:)`.
+    @Published var recordingMode: RecordingMode = UserDefaults.standard.recordingMode
+
     func apply(snapshot: RecordingSnapshot) {
         self.snapshot = snapshot
     }

@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var transcriptionOrchestrator: TranscriptionOrchestrator?
     private var recallPanelController: RecallPanelController?
     private var onboardingWindowController: NSWindowController?
+    private var leannBridge: LEANNBridge?
+    private var recordingPolicy: (any RecordingPolicy)?
     private var allowManualTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -25,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             let paths = AppPaths()
+            try paths.ensureBaseDirectories()
             let store = try EventStore(paths: paths)
             let diskGuard = DefaultDiskGuardService(paths: paths)
             let powerAssertionService = IOKitPowerAssertionService()
@@ -63,6 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             sleepMonitor.start()
 
+            // Phase 1: instantiate the LEANN bridge. No calls yet — the dev
+            // "Test LEANN" button in BriefingDashboardView drives the first one.
+            let leann = LEANNBridge()
+            self.leannBridge = leann
+
             self.eventStore = store
             self.recordingService = service
             self.sleepWakeMonitor = sleepMonitor
@@ -80,26 +88,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .receive(on: RunLoop.main)
                 .assign(to: &model.$highlightedTimeRanges)
 
-            statusBarController = StatusBarController(
+            let controller = StatusBarController(
                 model: model,
                 calendarService: calendarOverlay,
                 modelAssetService: modelAssets,
                 recallController: recallController,
+                leannBridge: leann,
                 onTranscribeNow: { [weak transcription] in
                     Task { @MainActor in
                         await transcription?.forceTranscribeAll()
                     }
+                },
+                onRecordingModeChanged: { [weak self] newMode in
+                    self?.applyRecordingMode(newMode)
+                },
+                onQuit: { [weak self] in
+                    self?.manualQuit()
                 }
-            ) { [weak self] in
-                self?.manualQuit()
-            }
+            )
+            statusBarController = controller
 
             registerLoginItemIfPossible()
+
+            // Phase 1 identity flip: build the recording policy from user's
+            // stored preference and route launch through it. The policy
+            // decides whether to auto-start (only Rogue does).
+            let currentMode = UserDefaults.standard.recordingMode
+            model.recordingMode = currentMode
+            let policy = RecordingPolicyFactory.make(
+                mode: currentMode,
+                dependencies: RecordingPolicyDependencies(
+                    recordingService: service,
+                    appModel: model,
+                    requestMicrophoneThenStart: { [weak self] in
+                        self?.requestMicrophoneThenStart()
+                    }
+                )
+            )
+            self.recordingPolicy = policy
 
             if !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") {
                 showOnboarding()
             } else {
-                requestMicrophoneThenStart()
+                policy.appLaunched()
+                // Phase 1: open the main window on launch so users immediately
+                // see the new briefing dashboard identity. (Previously the app
+                // lived as accessory-only and you had to click the status bar
+                // icon to see anything.)
+                controller.openMainWindow()
             }
 
             transcription.start()
@@ -117,6 +153,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         allowManualTermination ? .terminateNow : .terminateCancel
+    }
+
+    /// Swap the active recording policy at runtime. Called by StatusBarController
+    /// when the user picks a new mode from the context menu.
+    private func applyRecordingMode(_ newMode: RecordingMode) {
+        // Stop any in-flight recording from the old policy.
+        recordingPolicy?.userRequestedStop()
+
+        // Persist and publish the new mode.
+        UserDefaults.standard.recordingMode = newMode
+        model.recordingMode = newMode
+
+        // Build a fresh policy and let it decide whether to start recording.
+        guard let service = recordingService else { return }
+        let policy = RecordingPolicyFactory.make(
+            mode: newMode,
+            dependencies: RecordingPolicyDependencies(
+                recordingService: service,
+                appModel: model,
+                requestMicrophoneThenStart: { [weak self] in
+                    self?.requestMicrophoneThenStart()
+                }
+            )
+        )
+        self.recordingPolicy = policy
+        policy.appLaunched()
     }
 
     private func requestMicrophoneThenStart() {
@@ -163,7 +225,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
             window.orderOut(nil)
             self?.onboardingWindowController = nil
-            self?.requestMicrophoneThenStart()
+            // After onboarding completes, hand off to the active policy.
+            // Gentle/Manual do nothing; Rogue starts recording.
+            self?.recordingPolicy?.appLaunched()
+            self?.statusBarController?.openMainWindow()
         }
         let hosting = NSHostingController(rootView: view)
         hosting.view.wantsLayer = true
