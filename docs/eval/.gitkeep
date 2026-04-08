@@ -1,0 +1,8 @@
+# Placeholder to keep directory in git.
+#
+# This directory will hold:
+# - golden_set.json — 30 hand-curated fuzzy queries with expected sources (Phase 3)
+# - adversarial_corpus.json — 6 indirect-prompt-injection fixtures (Phase 3)
+# - eval-archive/ — timestamped EvalService run reports (Phase 3+)
+#
+# Populated by Phase 3 work. See docs/PLAN.md §9.
