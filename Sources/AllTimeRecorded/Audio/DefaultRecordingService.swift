@@ -15,8 +15,10 @@ final class DefaultRecordingService: NSObject, RecordingService, AVAudioRecorder
     private let fileManager: FileManager
 
     private var recorder: AVAudioRecorder?
+    private var systemCapture: SystemAudioCaptureService?
     private var currentSegmentStart: Date?
     private var currentSegmentTempURL: URL?
+    private var currentSystemTempURL: URL?
     private var currentSourceDeviceID: UInt32 = 0
     private var maintenanceTimer: Timer?
     private var rotationTimer: Timer?
@@ -250,8 +252,11 @@ final class DefaultRecordingService: NSObject, RecordingService, AVAudioRecorder
         let now = Date()
         let dayDirectory = paths.audioDirectory(for: now)
         try? fileManager.createDirectory(at: dayDirectory, withIntermediateDirectories: true)
-        let openFilename = "\(AppDateFormatter.fileTimestamp(now))__open.m4a"
-        let tempURL = dayDirectory.appendingPathComponent(openFilename, isDirectory: false)
+        let stamp = AppDateFormatter.fileTimestamp(now)
+        let micFilename = "\(stamp)__open_mic.m4a"
+        let sysFilename = "\(stamp)__open_sys.m4a"
+        let tempURL = dayDirectory.appendingPathComponent(micFilename, isDirectory: false)
+        let sysTempURL = dayDirectory.appendingPathComponent(sysFilename, isDirectory: false)
 
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
@@ -274,8 +279,16 @@ final class DefaultRecordingService: NSObject, RecordingService, AVAudioRecorder
         self.recorder = recorder
         currentSegmentStart = now
         currentSegmentTempURL = tempURL
+        currentSystemTempURL = sysTempURL
         currentSourceDeviceID = DefaultInputDeviceMonitor.currentDefaultInputDeviceID()
         state = .recording
+
+        // Start system audio capture (best-effort; mic continues even if this fails)
+        let capture = SystemAudioCaptureService()
+        self.systemCapture = capture
+        Task { @MainActor in
+            _ = await capture.start(outputURL: sysTempURL)
+        }
 
         if let closingGap {
             closeGapIfNeeded(reason: closingGap, at: now)
@@ -312,38 +325,64 @@ final class DefaultRecordingService: NSObject, RecordingService, AVAudioRecorder
             self.recorder = nil
             currentSegmentStart = nil
             currentSegmentTempURL = nil
+            currentSystemTempURL = nil
             return
         }
 
         recorder.stop()
         let endAt = Date()
-        let finalURL = finalizeSegmentFile(tempURL: tempURL, startAt: startAt, endAt: endAt)
-        let bytes = fileSize(for: finalURL)
-        let segment = RecordingSegment(
-            id: UUID(),
-            startAt: startAt,
-            endAt: max(startAt, endAt),
-            fileURL: finalURL,
-            bytes: bytes,
-            sourceDeviceID: currentSourceDeviceID
-        )
-        segments.append(segment)
-        eventStore.appendSegment(segment)
+
+        // Stop system audio capture
+        let capture = self.systemCapture
+        let sysTempURL = currentSystemTempURL
+        self.systemCapture = nil
+
+        let micFinalURL = finalizeSegmentFile(tempURL: tempURL, startAt: startAt, endAt: endAt, suffix: "_mic")
+        let micBytes = fileSize(for: micFinalURL)
+
+        // Finalize system audio file asynchronously (best-effort)
+        let fm = fileManager
+        Task { @MainActor [weak self] in
+            var systemFinalURL: URL? = nil
+            var systemBytes: Int64 = 0
+
+            if let capture, let sysTempURL {
+                let resultURL = await capture.stop()
+                if resultURL != nil, fm.fileExists(atPath: sysTempURL.path) {
+                    systemFinalURL = self?.finalizeSegmentFile(tempURL: sysTempURL, startAt: startAt, endAt: endAt, suffix: "_sys")
+                    systemBytes = self?.fileSize(for: systemFinalURL!) ?? 0
+                }
+            }
+
+            let segment = RecordingSegment(
+                id: UUID(),
+                startAt: startAt,
+                endAt: max(startAt, endAt),
+                fileURL: micFinalURL,
+                bytes: micBytes,
+                sourceDeviceID: self?.currentSourceDeviceID ?? 0,
+                systemFileURL: systemFinalURL,
+                systemBytes: systemBytes
+            )
+            self?.segments.append(segment)
+            self?.eventStore.appendSegment(segment)
+        }
 
         self.recorder = nil
         currentSegmentStart = nil
         currentSegmentTempURL = nil
+        currentSystemTempURL = nil
 
         if stopReason == .userQuit {
             pendingGapStarts.removeAll()
         }
     }
 
-    private func finalizeSegmentFile(tempURL: URL, startAt: Date, endAt: Date) -> URL {
-        let filename = "\(AppDateFormatter.fileTimestamp(startAt))__\(AppDateFormatter.fileTimestamp(max(startAt, endAt))).m4a"
+    private func finalizeSegmentFile(tempURL: URL, startAt: Date, endAt: Date, suffix: String = "") -> URL {
+        let filename = "\(AppDateFormatter.fileTimestamp(startAt))__\(AppDateFormatter.fileTimestamp(max(startAt, endAt)))\(suffix).m4a"
         var finalURL = tempURL.deletingLastPathComponent().appendingPathComponent(filename, isDirectory: false)
         if fileManager.fileExists(atPath: finalURL.path) {
-            let uniqueName = "\(AppDateFormatter.fileTimestamp(startAt))__\(AppDateFormatter.fileTimestamp(max(startAt, endAt)))__\(UUID().uuidString.prefix(6)).m4a"
+            let uniqueName = "\(AppDateFormatter.fileTimestamp(startAt))__\(AppDateFormatter.fileTimestamp(max(startAt, endAt)))\(suffix)__\(UUID().uuidString.prefix(6)).m4a"
             finalURL = tempURL.deletingLastPathComponent().appendingPathComponent(uniqueName, isDirectory: false)
         }
         try? fileManager.moveItem(at: tempURL, to: finalURL)
@@ -374,7 +413,9 @@ final class DefaultRecordingService: NSObject, RecordingService, AVAudioRecorder
                     endAt: Date(),
                     fileURL: currentURL,
                     bytes: fileSize(for: currentURL),
-                    sourceDeviceID: currentSourceDeviceID
+                    sourceDeviceID: currentSourceDeviceID,
+                    systemFileURL: currentSystemTempURL,
+                    systemBytes: currentSystemTempURL.flatMap { fileSize(for: $0) } ?? 0
                 )
             )
         }

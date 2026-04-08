@@ -4,7 +4,7 @@ import Foundation
 import IOKit.ps
 
 @MainActor
-final class TranscriptionOrchestrator: TranscriptionScheduling {
+final class TranscriptionOrchestrator: TranscriptionScheduling, ObservableObject {
     private let paths: AppPaths
     private let modelService: ModelAssetService
     private let runner: WhisperCppRunner
@@ -12,7 +12,7 @@ final class TranscriptionOrchestrator: TranscriptionScheduling {
     private let calendar: Calendar
 
     private var timer: Timer?
-    private var isTranscribing = false
+    @Published private(set) var isTranscribing = false
     private var stopped = false
 
     init(
@@ -46,6 +46,46 @@ final class TranscriptionOrchestrator: TranscriptionScheduling {
         stopped = true
         timer?.invalidate()
         timer = nil
+    }
+
+    func forceTranscribeAll() async {
+        if isTranscribing {
+            NSLog("[ATR] forceTranscribeAll: already transcribing, skipped")
+            return
+        }
+        if !modelService.isLocalModelUsable {
+            NSLog("[ATR] forceTranscribeAll: model not usable")
+            return
+        }
+
+        let pendingDays = pendingDayDirectories()
+        if pendingDays.isEmpty {
+            NSLog("[ATR] forceTranscribeAll: no pending days")
+            return
+        }
+
+        NSLog("[ATR] forceTranscribeAll: starting %d days", pendingDays.count)
+        isTranscribing = true
+        defer {
+            isTranscribing = false
+            NSLog("[ATR] forceTranscribeAll: finished")
+        }
+
+        if case .ready = modelService.state {
+            // Already ready.
+        } else {
+            await modelService.ensureModelReady()
+        }
+        guard case .ready(let modelPath) = modelService.state else {
+            NSLog("[ATR] forceTranscribeAll: model state not ready after ensure: %@", String(describing: modelService.state))
+            return
+        }
+
+        for dayDir in pendingDays {
+            if stopped { return }
+            NSLog("[ATR] forceTranscribeAll: transcribing %@", dayDir.lastPathComponent)
+            await transcribeDay(dayDirectory: dayDir, modelPath: modelPath)
+        }
     }
 
     private func tick() async {
@@ -109,7 +149,7 @@ final class TranscriptionOrchestrator: TranscriptionScheduling {
         for sourceFile in sourceFiles {
             let segmentStart = parseSegmentStart(fileURL: sourceFile, fallbackDayDirectory: dayDirectory)
             do {
-                let part = try runner.transcribe(
+                let part = try await runner.transcribe(
                     fileURL: sourceFile,
                     modelURL: URL(fileURLWithPath: modelPath),
                     segmentStartAt: segmentStart

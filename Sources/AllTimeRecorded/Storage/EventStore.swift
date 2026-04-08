@@ -141,32 +141,62 @@ final class EventStore {
         }
 
         var recovered: [RecordingSegment] = []
+        // Collect open system audio files keyed by their timestamp prefix
+        var openSysFiles: [String: URL] = [:]
 
+        // First pass: discover all __open files
+        var openMicFiles: [(url: URL, stamp: String)] = []
+        var allURLs: [URL] = []
         for case let fileURL as URL in enumerator {
             guard fileURL.pathExtension == "m4a",
                   fileURL.lastPathComponent.contains("__open")
             else {
                 continue
             }
+            allURLs.append(fileURL)
+        }
 
-            let fileName = fileURL.deletingPathExtension().lastPathComponent
-            let startStamp = fileName.components(separatedBy: "__").first ?? ""
-            let startAt = AppDateFormatter.parseFileTimestamp(startStamp) ?? currentDate
-            let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        for fileURL in allURLs {
+            let name = fileURL.deletingPathExtension().lastPathComponent
+            let stamp = name.components(separatedBy: "__").first ?? ""
+            if name.contains("_sys") {
+                openSysFiles[stamp] = fileURL
+            } else {
+                openMicFiles.append((url: fileURL, stamp: stamp))
+            }
+        }
+
+        for (micURL, stamp) in openMicFiles {
+            let startAt = AppDateFormatter.parseFileTimestamp(stamp) ?? currentDate
+            let values = try? micURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
             let endAt = max(startAt, values?.contentModificationDate ?? currentDate)
             let bytes = Int64(values?.fileSize ?? 0)
-            let finalName = "\(AppDateFormatter.fileTimestamp(startAt))__\(AppDateFormatter.fileTimestamp(endAt)).m4a"
-            let finalURL = fileURL.deletingLastPathComponent().appendingPathComponent(finalName, isDirectory: false)
+            let micFinalName = "\(AppDateFormatter.fileTimestamp(startAt))__\(AppDateFormatter.fileTimestamp(endAt))_mic.m4a"
+            let micFinalURL = micURL.deletingLastPathComponent().appendingPathComponent(micFinalName, isDirectory: false)
+            try? fileManager.moveItem(at: micURL, to: micFinalURL)
 
-            try? fileManager.moveItem(at: fileURL, to: finalURL)
+            var systemFinalURL: URL? = nil
+            var systemBytes: Int64 = 0
+            if let sysURL = openSysFiles[stamp] {
+                let sysFinalName = "\(AppDateFormatter.fileTimestamp(startAt))__\(AppDateFormatter.fileTimestamp(endAt))_sys.m4a"
+                let sysFinalURL = sysURL.deletingLastPathComponent().appendingPathComponent(sysFinalName, isDirectory: false)
+                try? fileManager.moveItem(at: sysURL, to: sysFinalURL)
+                if fileManager.fileExists(atPath: sysFinalURL.path) {
+                    systemFinalURL = sysFinalURL
+                    let sysValues = try? sysFinalURL.resourceValues(forKeys: [.fileSizeKey])
+                    systemBytes = Int64(sysValues?.fileSize ?? 0)
+                }
+            }
 
             let segment = RecordingSegment(
                 id: UUID(),
                 startAt: startAt,
                 endAt: endAt,
-                fileURL: finalURL,
+                fileURL: fileManager.fileExists(atPath: micFinalURL.path) ? micFinalURL : micURL,
                 bytes: bytes,
-                sourceDeviceID: 0
+                sourceDeviceID: 0,
+                systemFileURL: systemFinalURL,
+                systemBytes: systemBytes
             )
             appendSegment(segment)
             recovered.append(segment)

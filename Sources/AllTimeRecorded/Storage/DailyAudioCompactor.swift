@@ -114,6 +114,7 @@ actor DailyAudioCompactor {
                 fileURL.pathExtension == "m4a"
                     && fileURL.lastPathComponent != mergedURL.lastPathComponent
                     && !fileURL.lastPathComponent.contains("__open")
+                    && !fileURL.lastPathComponent.contains("_sys")
             }
             .sorted(by: { lhs, rhs in
                 fileSortKey(lhs) < fileSortKey(rhs)

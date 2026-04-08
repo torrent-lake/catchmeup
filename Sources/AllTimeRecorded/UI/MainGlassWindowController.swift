@@ -6,22 +6,30 @@ final class MainGlassWindowController: NSWindowController {
     private let appModel: AppModel
     private let calendarService: CalendarOverlayService
     private let modelAssetService: ModelAssetService
+    private let recallController: RecallPanelController
+    private let onTranscribeNow: () -> Void
 
     init(
         appModel: AppModel,
         calendarService: CalendarOverlayService,
-        modelAssetService: ModelAssetService
+        modelAssetService: ModelAssetService,
+        recallController: RecallPanelController,
+        onTranscribeNow: @escaping () -> Void
     ) {
         self.appModel = appModel
         self.calendarService = calendarService
         self.modelAssetService = modelAssetService
+        self.recallController = recallController
+        self.onTranscribeNow = onTranscribeNow
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 390),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 520),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        let recall = recallController
+        let transcribeNow = onTranscribeNow
         let view = MainDashboardView(
             appModel: appModel,
             calendarService: calendarService,
@@ -29,7 +37,9 @@ final class MainGlassWindowController: NSWindowController {
             showsWindowControls: true,
             onCloseWindow: { window.performClose(nil) },
             onMinimizeWindow: { window.miniaturize(nil) },
-            onZoomWindow: { window.performZoom(nil) }
+            onZoomWindow: { window.performZoom(nil) },
+            onToggleRecall: { recall.toggle() },
+            onTranscribeNow: transcribeNow
         )
         let hosting = NSHostingController(rootView: view)
         window.title = "AllTimeRecorded"
@@ -50,6 +60,9 @@ final class MainGlassWindowController: NSWindowController {
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
 
+        // Force the frame size after NSHostingController has been set,
+        // since it overrides contentRect with the SwiftUI intrinsic size.
+        window.setContentSize(NSSize(width: 680, height: 420))
         window.center()
 
         super.init(window: window)
@@ -64,9 +77,11 @@ final class MainGlassWindowController: NSWindowController {
         guard let window else { return }
         if window.isVisible {
             window.orderOut(nil)
+            recallController.hide()
         } else {
             showWindow(nil)
             NSApp.activate(ignoringOtherApps: true)
+            recallController.show(besideWindow: window)
         }
     }
 }

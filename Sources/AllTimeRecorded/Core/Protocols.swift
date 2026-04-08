@@ -38,4 +38,5 @@ protocol ModelAssetManaging: AnyObject {
 protocol TranscriptionScheduling: AnyObject {
     func start()
     func stop()
+    func forceTranscribeAll() async
 }

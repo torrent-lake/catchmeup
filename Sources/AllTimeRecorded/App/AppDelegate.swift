@@ -1,5 +1,7 @@
 import AppKit
+import Combine
 import Foundation
+import SwiftUI
 #if canImport(ServiceManagement)
 import ServiceManagement
 #endif
@@ -14,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var calendarOverlayService: CalendarOverlayService?
     private var modelAssetService: ModelAssetService?
     private var transcriptionOrchestrator: TranscriptionOrchestrator?
+    private var recallPanelController: RecallPanelController?
+    private var onboardingWindowController: NSWindowController?
     private var allowManualTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -66,16 +70,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.modelAssetService = modelAssets
             self.transcriptionOrchestrator = transcription
 
+            let queryService = LocalTranscriptSearchService(paths: paths)
+            let recallViewModel = RecallPanelViewModel(queryService: queryService)
+            let recallController = RecallPanelController(viewModel: recallViewModel)
+            self.recallPanelController = recallController
+
+            // Sync highlights from Recall panel to AppModel
+            recallViewModel.$highlightedTimeRanges
+                .receive(on: RunLoop.main)
+                .assign(to: &model.$highlightedTimeRanges)
+
             statusBarController = StatusBarController(
                 model: model,
                 calendarService: calendarOverlay,
-                modelAssetService: modelAssets
+                modelAssetService: modelAssets,
+                recallController: recallController,
+                onTranscribeNow: { [weak transcription] in
+                    Task { @MainActor in
+                        await transcription?.forceTranscribeAll()
+                    }
+                }
             ) { [weak self] in
                 self?.manualQuit()
             }
 
             registerLoginItemIfPossible()
-            requestMicrophoneThenStart()
+
+            if !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") {
+                showOnboarding()
+            } else {
+                requestMicrophoneThenStart()
+            }
+
             transcription.start()
         } catch {
             model.setState(.recovering)
@@ -111,6 +137,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcriptionOrchestrator?.stop()
         eventStore?.markCleanShutdown()
         NSApp.terminate(nil)
+    }
+
+    private func showOnboarding() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 340),
+            styleMask: [.titled, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        if #available(macOS 11.0, *) {
+            window.titlebarSeparatorStyle = .none
+        }
+        window.isMovableByWindowBackground = true
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+        window.center()
+
+        let view = OnboardingView { [weak self] in
+            UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
+            window.orderOut(nil)
+            self?.onboardingWindowController = nil
+            self?.requestMicrophoneThenStart()
+        }
+        let hosting = NSHostingController(rootView: view)
+        hosting.view.wantsLayer = true
+        hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
+        window.contentViewController = hosting
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+
+        let controller = NSWindowController(window: window)
+        controller.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        self.onboardingWindowController = controller
     }
 
     private func registerLoginItemIfPossible() {

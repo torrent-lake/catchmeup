@@ -37,7 +37,9 @@ final class StatusBarController: NSObject {
     private let model: AppModel
     private let calendarService: CalendarOverlayService
     private let modelAssetService: ModelAssetService
+    private let recallController: RecallPanelController
     private let onQuit: () -> Void
+    private let onTranscribeNow: () -> Void
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let panel = OverlayPanel(contentSize: NSSize(width: 448, height: 258))
     private let styleMenuItem = NSMenuItem(title: "切换样式", action: #selector(handleCycleStyle), keyEquivalent: "")
@@ -50,7 +52,9 @@ final class StatusBarController: NSObject {
     private lazy var mainWindowController = MainGlassWindowController(
         appModel: model,
         calendarService: calendarService,
-        modelAssetService: modelAssetService
+        modelAssetService: modelAssetService,
+        recallController: recallController,
+        onTranscribeNow: onTranscribeNow
     )
     private lazy var contextMenu: NSMenu = {
         let menu = NSMenu()
@@ -66,11 +70,15 @@ final class StatusBarController: NSObject {
         model: AppModel,
         calendarService: CalendarOverlayService,
         modelAssetService: ModelAssetService,
+        recallController: RecallPanelController,
+        onTranscribeNow: @escaping () -> Void,
         onQuit: @escaping () -> Void
     ) {
         self.model = model
         self.calendarService = calendarService
         self.modelAssetService = modelAssetService
+        self.recallController = recallController
+        self.onTranscribeNow = onTranscribeNow
         self.onQuit = onQuit
         self.currentStyle = StatusBarController.loadStyle()
         super.init()
@@ -95,6 +103,7 @@ final class StatusBarController: NSObject {
             rootView: PopoverContentView(
                 model: model,
                 onOpenMainWindow: { [weak self] in
+                    try? "[ATR-popover] tapped \(Date())\n".data(using: .utf8)?.write(to: URL(fileURLWithPath: "/tmp/atr-debug.log"), options: .atomic)
                     self?.toggleMainWindow()
                 }
             )
@@ -244,6 +253,17 @@ final class StatusBarController: NSObject {
     }
 
     private func toggleMainWindow() {
+        let msg = "[ATR] toggleMainWindow called at \(Date())\n"
+        let logURL = AppPaths().metaRoot.appendingPathComponent("debug.log")
+        if let data = msg.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logURL.path) {
+                if let fh = try? FileHandle(forWritingTo: logURL) {
+                    fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
+                }
+            } else {
+                try? data.write(to: logURL)
+            }
+        }
         mainWindowController.toggle()
     }
 

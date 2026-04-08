@@ -7,6 +7,7 @@ struct TimelineHeatmapPanel: View {
     var onHoverChanged: ((CalendarArcSegment?, CGPoint?) -> Void)? = nil
     var onArcTapped: ((CalendarArcSegment?, CGPoint?) -> Void)? = nil
     var onBinHoverChanged: ((DayBin?, CGPoint?) -> Void)? = nil
+    var highlightedRanges: [DateInterval] = []
     var cellWidth: CGFloat = 3
     var cellHeight: CGFloat = 18
     var cellSpacing: CGFloat = 1
@@ -77,6 +78,21 @@ struct TimelineHeatmapPanel: View {
                     onBinHoverChanged: onBinHoverChanged
                 )
                 .frame(width: canvasWidth, height: gridHeight, alignment: .topLeading)
+
+                if !highlightedRanges.isEmpty {
+                    QueryHighlightOverlay(
+                        bins: displayBins,
+                        highlightedRanges: highlightedRanges,
+                        columnsCount: columnsCount,
+                        rowsCount: rowsCount,
+                        cellWidth: cellWidth,
+                        cellHeight: cellHeight,
+                        spacing: cellSpacing,
+                        gridOriginX: gridOriginX
+                    )
+                    .frame(width: canvasWidth, height: gridHeight, alignment: .topLeading)
+                    .allowsHitTesting(false)
+                }
 
                 if showsNowMarker {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -388,5 +404,60 @@ private struct CalendarHighlighterOverlay: View {
         let green = Double((value >> 8) & 0xFF) / 255.0
         let blue = Double(value & 0xFF) / 255.0
         return red > 0.62 && green < 0.45 && blue < 0.45
+    }
+}
+
+private struct QueryHighlightOverlay: View {
+    let bins: [DayBin]
+    let highlightedRanges: [DateInterval]
+    let columnsCount: Int
+    let rowsCount: Int
+    let cellWidth: CGFloat
+    let cellHeight: CGFloat
+    let spacing: CGFloat
+    let gridOriginX: CGFloat
+
+    @State private var pulse = false
+
+    var body: some View {
+        Canvas { context, _ in
+            let matchingIndices = matchingBinIndices()
+            let stepX = cellWidth + spacing
+            let stepY = cellHeight + spacing
+            let opacity = pulse ? 0.28 : 0.12
+
+            for index in matchingIndices {
+                let column = index % columnsCount
+                let row = index / columnsCount
+                let x = gridOriginX + CGFloat(column) * stepX - 1.2
+                let y = CGFloat(row) * stepY - 1.2
+                let rect = CGRect(x: x, y: y, width: cellWidth + 2.4, height: cellHeight + 2.4)
+                let cornerRadius = max(2, cellWidth * 0.35)
+                let path = Path(roundedRect: rect, cornerRadius: cornerRadius)
+                context.stroke(
+                    path,
+                    with: .color(Theme.neonCyan.opacity(opacity)),
+                    style: StrokeStyle(lineWidth: 1.4, lineCap: .round)
+                )
+            }
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
+    }
+
+    private func matchingBinIndices() -> Set<Int> {
+        var indices = Set<Int>()
+        for range in highlightedRanges {
+            for (i, bin) in bins.enumerated() {
+                let binInterval = DateInterval(start: bin.startAt, end: bin.endAt)
+                if binInterval.intersects(range) {
+                    indices.insert(i)
+                }
+            }
+        }
+        return indices
     }
 }

@@ -3,6 +3,7 @@ import Foundation
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var snapshot: RecordingSnapshot = .empty()
+    @Published var highlightedTimeRanges: [DateInterval] = []
 
     func apply(snapshot: RecordingSnapshot) {
         self.snapshot = snapshot

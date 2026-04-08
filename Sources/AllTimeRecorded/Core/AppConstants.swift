@@ -3,6 +3,9 @@ import AVFoundation
 
 enum AppConstants {
     static let appName = "AllTimeRecorded"
+    static let appVersion = "1.0.0"
+    static let buildNumber = "1"
+
     static let segmentDuration: TimeInterval = 30 * 60
     static let loudnessSampleInterval: TimeInterval = 5
     static let diskLowThresholdBytes: Int64 = 5 * 1024 * 1024 * 1024
@@ -18,6 +21,10 @@ enum AppConstants {
     static let recordingSampleRate = 22_050
     static let recordingChannels = 1
     static let recordingBitRate = 24_000
+
+    static let systemAudioSampleRate = 48_000
+    static let systemAudioChannels = 2
+    static let systemAudioBitRate = 64_000
 
     static let transcriptionPollInterval: TimeInterval = 10 * 60
     static let transcriptionIdleSecondsThreshold: TimeInterval = 60

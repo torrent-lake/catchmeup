@@ -56,18 +56,20 @@ enum TimelineGeometry {
         markerHeight: CGFloat
     ) -> (start: CGPoint, midA: CGPoint, midB: CGPoint, end: CGPoint, startFromLeft: Bool) {
         let startFromLeft = target.x <= canvasWidth * 0.5
-        let sideInset: CGFloat = 20
+        let scale = min(1.0, canvasWidth / 300)
+        let sideInset = max(8, 20 * scale)
         let startX = startFromLeft ? sideInset : canvasWidth - sideInset
-        let startY = max(7, min(12, markerHeight * 0.14))
+        let startY = max(5, min(12, markerHeight * 0.14))
         let start = CGPoint(x: startX, y: startY)
-        let horizontalLead = max(18, min(36, abs(target.x - startX) * 0.34))
+        let horizontalLead = max(8, min(36, abs(target.x - startX) * 0.34)) * scale
         let midA = CGPoint(
             x: startFromLeft ? startX + horizontalLead : startX - horizontalLead,
             y: startY
         )
+        let verticalOffset = max(4, 10 * scale)
         let midB = CGPoint(
-            x: target.x + (startFromLeft ? -8 : 8),
-            y: max(startY + 8, target.y - 10)
+            x: target.x + (startFromLeft ? -4 * scale : 4 * scale),
+            y: max(startY + 4, target.y - verticalOffset)
         )
         let end = target
         return (start, midA, midB, end, startFromLeft)

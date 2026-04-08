@@ -11,6 +11,8 @@ struct MainDashboardView: View {
     var onCloseWindow: (() -> Void)? = nil
     var onMinimizeWindow: (() -> Void)? = nil
     var onZoomWindow: (() -> Void)? = nil
+    var onToggleRecall: (() -> Void)? = nil
+    var onTranscribeNow: (() -> Void)? = nil
 
     @State private var pulse = false
     @State private var hoveredArc: CalendarArcSegment?
@@ -28,6 +30,8 @@ struct MainDashboardView: View {
     @State private var statusHint: String?
     @State private var transcriptionHealth = "Transcribe: checking..."
     @State private var calendarReloadTask: Task<Void, Never>?
+    @State private var transcriptionRefreshTimer: Timer?
+    @State private var whisperRunning = false
     @StateObject private var historyStore = TimelineHistoryStore()
 
     var body: some View {
@@ -71,10 +75,17 @@ struct MainDashboardView: View {
             withAnimation(.easeInOut(duration: 1.7).repeatForever(autoreverses: true)) {
                 pulse = true
             }
-            historyStore.reload()
+            historyStore.reloadAsync()
             modelAssetService.refreshStateFromDisk()
             refreshTranscriptionHealth()
+            refreshWhisperStatus()
             scheduleCalendarReload(for: selectedDay, delayNanoseconds: 0)
+            transcriptionRefreshTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { _ in
+                Task { @MainActor in
+                    refreshTranscriptionHealth()
+                    refreshWhisperStatus()
+                }
+            }
         }
         .onChange(of: selectedDay) { _, newValue in
             let normalized = Calendar.current.startOfDay(for: newValue)
@@ -93,6 +104,8 @@ struct MainDashboardView: View {
         .onDisappear {
             calendarReloadTask?.cancel()
             calendarReloadTask = nil
+            transcriptionRefreshTimer?.invalidate()
+            transcriptionRefreshTimer = nil
         }
         .sheet(isPresented: $showingCalendarManager) {
             CalendarSourcesSheet(service: calendarService)
@@ -102,10 +115,10 @@ struct MainDashboardView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 6) {
-                if showsWindowControls {
-                    windowControls
-                }
+            if showsWindowControls {
+                windowControls
+            }
+            VStack(alignment: .leading, spacing: 2) {
                 Text("AllTimeRecorded")
                     .font(.system(.title2, design: .rounded).weight(.semibold))
                     .foregroundStyle(.white)
@@ -120,6 +133,11 @@ struct MainDashboardView: View {
             }
             iconButton(systemName: "folder", help: "Open Recording Folder") {
                 openRecordingFolder()
+            }
+            if let onToggleRecall {
+                iconButton(systemName: "terminal", help: "Recall Terminal") {
+                    onToggleRecall()
+                }
             }
 
             HStack(spacing: 8) {
@@ -141,56 +159,48 @@ struct MainDashboardView: View {
     }
 
     private var windowControls: some View {
-        HStack(spacing: 8) {
-            windowControlDot(
-                color: Color(red: 1.0, green: 0.37, blue: 0.33),
-                help: "Close",
-                action: onCloseWindow
-            )
-            windowControlDot(
-                color: Color(red: 1.0, green: 0.78, blue: 0.12),
-                help: "Minimize",
-                action: onMinimizeWindow
-            )
-            windowControlDot(
-                color: Color(red: 0.19, green: 0.83, blue: 0.35),
-                help: "Zoom",
-                action: onZoomWindow
-            )
+        HStack(spacing: 7) {
+            trafficLight(color: Color(red: 1.0, green: 0.37, blue: 0.33), help: "Close", action: onCloseWindow)
+            trafficLight(color: Color(red: 1.0, green: 0.78, blue: 0.12), help: "Minimize", action: onMinimizeWindow)
+            trafficLight(color: Color(red: 0.19, green: 0.83, blue: 0.35), help: "Zoom", action: onZoomWindow)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .background(
-            Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.08))
-                .background(.ultraThinMaterial, in: Capsule(style: .continuous))
-        )
-        .overlay(
-            Capsule(style: .continuous)
-                .stroke(Color.white.opacity(0.26), lineWidth: 0.8)
-        )
-        .shadow(color: Color.black.opacity(0.28), radius: 5, x: 0, y: 2)
     }
 
-    private func windowControlDot(
-        color: Color,
-        help: String,
-        action: (() -> Void)?
-    ) -> some View {
-        Button(action: { action?() }) {
+    private func trafficLight(color: Color, help: String, action: (() -> Void)?) -> some View {
+        let enabled = action != nil
+        return Button(action: { action?() }) {
             ZStack {
+                // Soft glow behind
                 Circle()
-                    .fill(color.opacity(action == nil ? 0.45 : 0.95))
+                    .fill(color.opacity(enabled ? 0.3 : 0))
+                    .frame(width: 16, height: 16)
+                    .blur(radius: 3)
+
+                // Main dot
                 Circle()
-                    .fill(Color.white.opacity(0.22))
-                    .frame(width: 4, height: 4)
-                    .offset(x: -1, y: -1)
-                    .blendMode(.plusLighter)
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                color.opacity(enabled ? 1.0 : 0.4),
+                                color.opacity(enabled ? 0.7 : 0.25),
+                            ],
+                            center: .init(x: 0.38, y: 0.32),
+                            startRadius: 0,
+                            endRadius: 6
+                        )
+                    )
+                    .frame(width: 11, height: 11)
+
+                // Glass highlight
+                Ellipse()
+                    .fill(Color.white.opacity(enabled ? 0.35 : 0.1))
+                    .frame(width: 5, height: 3)
+                    .offset(x: -1, y: -2)
+                    .blur(radius: 0.5)
             }
-            .frame(width: 11, height: 11)
         }
         .buttonStyle(.plain)
-        .disabled(action == nil)
+        .disabled(!enabled)
         .help(help)
     }
 
@@ -291,6 +301,7 @@ struct MainDashboardView: View {
                     hoveredBin = bin
                     hoveredBinLocation = point
                 },
+                highlightedRanges: appModel.highlightedTimeRanges,
                 cellWidth: 6,
                 cellHeight: 24,
                 cellSpacing: 1.4,
@@ -365,13 +376,38 @@ struct MainDashboardView: View {
             }
 
             HStack(spacing: 8) {
-                actionButton(
-                    icon: modelActionIcon,
-                    title: modelActionTitle,
-                    tint: modelStatusColor,
-                    disabled: isModelBusy
-                ) {
-                    prepareModel()
+                if !isModelFullyReady {
+                    actionButton(
+                        icon: modelActionIcon,
+                        title: modelActionTitle,
+                        tint: modelStatusColor,
+                        disabled: isModelBusy
+                    ) {
+                        prepareModel()
+                    }
+                }
+                if whisperRunning {
+                    actionButton(
+                        icon: "progress.indicator",
+                        title: "Transcribing...",
+                        tint: Theme.neonCyan.opacity(0.6),
+                        disabled: true
+                    ) {}
+                } else if let onTranscribeNow, pendingTranscriptDaysCount() > 0 {
+                    actionButton(
+                        icon: "bolt.fill",
+                        title: "Transcribe Now",
+                        tint: Theme.neonCyan,
+                        disabled: false
+                    ) {
+                        onTranscribeNow()
+                        pushHint("Transcription started...")
+                        // Refresh status after a short delay
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 3_000_000_000)
+                            refreshTranscriptionHealth()
+                        }
+                    }
                 }
                 actionButton(icon: "cpu", title: "Model Folder", tint: .white, disabled: false) {
                     openModelFolder()
@@ -471,6 +507,13 @@ struct MainDashboardView: View {
         }
     }
 
+    private var isModelFullyReady: Bool {
+        if case .ready = modelAssetService.state, resolveWhisperCLIPath() != nil {
+            return true
+        }
+        return false
+    }
+
     private var modelActionTitle: String {
         if case .ready = modelAssetService.state, resolveWhisperCLIPath() == nil {
             return isInstallingCLI ? "Installing CLI..." : "Install CLI"
@@ -483,7 +526,7 @@ struct MainDashboardView: View {
         case .verifying:
             return "Verifying..."
         case .ready:
-            return "Re-Verify Model"
+            return "Model Ready"
         case .failed:
             return "Retry Download"
         }
@@ -721,6 +764,10 @@ struct MainDashboardView: View {
             }
             return
         }
+        if whisperRunning {
+            transcriptionHealth = "Transcribe: \(pending)d pending (transcribing...)"
+            return
+        }
         if !isOnACPower() {
             transcriptionHealth = "Transcribe: \(pending)d pending (waiting AC power)"
             return
@@ -885,6 +932,30 @@ struct MainDashboardView: View {
         let seconds = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .null)
         return seconds >= AppConstants.transcriptionIdleSecondsThreshold
     }
+
+    private func refreshWhisperStatus() {
+        Task.detached {
+            let running = await checkWhisperRunning()
+            await MainActor.run { whisperRunning = running }
+        }
+    }
+
+    private nonisolated func checkWhisperRunning() async -> Bool {
+        let pipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        process.arguments = ["-f", "whisper-cli"]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return false
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return !data.isEmpty
+    }
 }
 
 private struct TimelinePanelSizePreferenceKey: PreferenceKey {
@@ -1009,28 +1080,36 @@ private struct TimelineBinHoverCard: View {
 
 @MainActor
 private final class TimelineHistoryStore: ObservableObject {
-    private let eventStore: EventStore?
+    private let eventsFileURL: URL
     private var segments: [RecordingSegment] = []
     private var gaps: [GapEvent] = []
     private var loudness: [LoudnessEvent] = []
     private var cacheByDay: [String: [DayBin]] = [:]
 
     init() {
-        eventStore = try? EventStore(paths: AppPaths())
+        eventsFileURL = AppPaths().eventsFileURL
     }
 
     func reload() {
-        guard let eventStore else {
-            segments = []
-            gaps = []
-            loudness = []
-            return
-        }
-        let loaded = eventStore.loadTimelineData()
+        let loaded = Self.parseEventsFile(at: eventsFileURL)
         segments = loaded.segments
         gaps = loaded.gaps
         loudness = loaded.loudness
         cacheByDay.removeAll(keepingCapacity: true)
+    }
+
+    func reloadAsync() {
+        let url = eventsFileURL
+        Task.detached(priority: .utility) {
+            let loaded = Self.parseEventsFile(at: url)
+            await MainActor.run { [loaded] in
+                self.segments = loaded.segments
+                self.gaps = loaded.gaps
+                self.loudness = loaded.loudness
+                self.cacheByDay.removeAll(keepingCapacity: true)
+                self.objectWillChange.send()
+            }
+        }
     }
 
     func bins(for day: Date) -> [DayBin] {
@@ -1055,6 +1134,51 @@ private final class TimelineHistoryStore: ObservableObject {
         formatter.timeZone = .current
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: day)
+    }
+
+    // Self-contained parser that runs off-main-thread
+    private nonisolated static func parseEventsFile(at url: URL) -> (segments: [RecordingSegment], gaps: [GapEvent], loudness: [LoudnessEvent]) {
+        guard let data = try? Data(contentsOf: url),
+              let contents = String(data: data, encoding: .utf8) else {
+            return ([], [], [])
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            guard let date = AppDateFormatter.parseEventTimestamp(value) else {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid ISO8601 date")
+            }
+            return date
+        }
+
+        struct StoredEvent: Codable {
+            enum EventType: String, Codable { case segment, gap, loudness }
+            let type: EventType
+            let recordedAt: Date
+            let segment: RecordingSegment?
+            let gap: GapEvent?
+            let loudness: LoudnessEvent?
+        }
+
+        var segments: [RecordingSegment] = []
+        var gaps: [GapEvent] = []
+        var loudnessArr: [LoudnessEvent] = []
+        for line in contents.split(whereSeparator: \.isNewline) {
+            guard !line.isEmpty, let lineData = line.data(using: .utf8) else { continue }
+            guard let event = try? decoder.decode(StoredEvent.self, from: lineData) else { continue }
+            switch event.type {
+            case .segment: if let s = event.segment { segments.append(s) }
+            case .gap: if let g = event.gap { gaps.append(g) }
+            case .loudness: if let l = event.loudness { loudnessArr.append(l) }
+            }
+        }
+        return (
+            segments.sorted { $0.startAt < $1.startAt },
+            gaps.sorted { $0.startAt < $1.startAt },
+            loudnessArr.sorted { $0.sampledAt < $1.sampledAt }
+        )
     }
 }
 
