@@ -1,0 +1,15 @@
+Chat: NBA 6145 - AI Strategy and Applications
+Type: group
+
+[2026-04-06 12:12] vraj patel: Hey guys, do u guys wanna do a quick zoom call today to do the final project
+[2026-04-06 14:18] me: i'll end class around 4:10
+[2026-04-06 14:19] vraj patel: 8PM is that fine
+[2026-04-06 19:56] vraj patel: Zoom Meeting Apr 6 08:00 PM, ID: 929 4009 0584
+[2026-04-07 00:15] vraj patel: https://vp543.github.io/agentvault-pitch/ The slide deck
+[2026-04-07 20:42] member: I think our idea is strong around security pain point and AgentVault positioning
+[2026-04-08 15:11] Li Peixiao: How are we going to do the 3-minute elevator pitch?
+[2026-04-08 16:26] member: 3-minute pitch script.docx, made with GPT, sounds more towards customer app
+[2026-04-08 17:05] vraj patel: slide + pdf + script links updated
+[2026-04-08 17:08] vraj patel: We just need the video now
+[2026-04-08 18:14] Li Peixiao: I just finished the presentation and will submit shortly on canvas
+[2026-04-08 21:19] Li Peixiao: Yes I submitted
