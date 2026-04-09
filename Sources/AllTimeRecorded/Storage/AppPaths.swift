@@ -1,6 +1,6 @@
 import Foundation
 
-struct AppPaths {
+struct AppPaths: @unchecked Sendable {
     let fileManager: FileManager
     let calendar: Calendar
 

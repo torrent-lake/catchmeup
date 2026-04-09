@@ -40,11 +40,25 @@ final class AgentChatViewModel: ObservableObject {
         case error(message: String)
     }
 
+    /// Whether the user has given feedback on the current answer.
+    @Published var feedbackGiven: AuditEntry.Rating?
+
+    /// File chunks available for drag-and-drop (populated by file aggregation queries).
+    @Published var fileResults: [SourceChunk] = []
+
     private let session: AgentSession
+    private let auditLog: AuditLog?
+    private let briefingService: BriefingService?
     private var currentTask: Task<Void, Never>?
 
-    init(session: AgentSession) {
+    init(
+        session: AgentSession,
+        auditLog: AuditLog? = nil,
+        briefingService: BriefingService? = nil
+    ) {
         self.session = session
+        self.auditLog = auditLog
+        self.briefingService = briefingService
     }
 
     /// Submit the current `inputText` as a new question. Cancels any
@@ -56,6 +70,8 @@ final class AgentChatViewModel: ObservableObject {
         currentTask?.cancel()
         lastQuestion = trimmed
         inputText = ""
+        feedbackGiven = nil
+        fileResults = []
         state = .retrieving(sourceIDs: [])
 
         let stream = session.ask(question: trimmed)
@@ -118,6 +134,91 @@ final class AgentChatViewModel: ObservableObject {
             return true
         case .idle, .complete, .error:
             return false
+        }
+    }
+
+    // MARK: - Feedback
+
+    func giveFeedback(_ rating: AuditEntry.Rating) {
+        feedbackGiven = rating
+        guard let auditLog else { return }
+        var hasher = Hasher()
+        hasher.combine(lastQuestion)
+        let hash = String(format: "%08x", abs(hasher.finalize()))
+        Task {
+            await auditLog.append(.feedbackEntry(
+                questionHash: hash,
+                rating: rating
+            ))
+        }
+    }
+
+    // MARK: - Proactive brief
+
+    /// Ask "What might I forget tomorrow?"
+    func askProactiveBrief() {
+        guard let briefingService else { return }
+        currentTask?.cancel()
+        lastQuestion = "What should I not forget about tomorrow?"
+        inputText = ""
+        feedbackGiven = nil
+        state = .retrieving(sourceIDs: [])
+
+        currentTask = Task { [weak self] in
+            do {
+                let stream = try await briefingService.generateProactiveBrief()
+                var accumulated = ""
+                var chunks: [SourceChunk] = []
+                for try await event in stream {
+                    if Task.isCancelled { return }
+                    switch event {
+                    case .started:
+                        await MainActor.run { self?.state = .retrieving(sourceIDs: []) }
+                    case .retrieving(let sourceIDs):
+                        await MainActor.run { self?.state = .retrieving(sourceIDs: sourceIDs) }
+                    case .retrieved(let gathered):
+                        chunks = gathered
+                        await MainActor.run { self?.state = .streaming(text: accumulated, chunks: chunks) }
+                    case .textDelta(let delta):
+                        accumulated += delta
+                        let t = accumulated; let c = chunks
+                        await MainActor.run { self?.state = .streaming(text: t, chunks: c) }
+                    case .complete(let text, let cited):
+                        let t = text; let c = cited
+                        await MainActor.run { self?.state = .complete(text: t, chunks: c) }
+                    }
+                }
+            } catch {
+                let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                await MainActor.run { self?.state = .error(message: msg) }
+            }
+        }
+    }
+
+    // MARK: - File aggregation
+
+    /// Gather files related to a topic. Returns chunks whose originURI
+    /// points to local files. The UI can use these for drag-and-drop.
+    func gatherFiles(topic: String) {
+        guard let briefingService else { return }
+        currentTask?.cancel()
+        lastQuestion = "Gather files: \(topic)"
+        state = .retrieving(sourceIDs: ["files"])
+
+        currentTask = Task { [weak self] in
+            do {
+                let chunks = try await briefingService.gatherFiles(topic: topic)
+                await MainActor.run {
+                    self?.fileResults = chunks
+                    self?.state = .complete(
+                        text: "Found \(chunks.count) files related to \"\(topic)\". Drag the collection to upload.",
+                        chunks: chunks
+                    )
+                }
+            } catch {
+                let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                await MainActor.run { self?.state = .error(message: msg) }
+            }
         }
     }
 }

@@ -14,6 +14,18 @@ enum Theme {
     static let idleGray = Color.white.opacity(0.12)
     static let idleGrayNS = NSColor.white.withAlphaComponent(0.12)
 
+    // Context-density source colors
+    static let emailViolet = Color(hex: "#9B7AFF")
+    static let emailVioletNS = NSColor.from(hex: "#9B7AFF")
+    static let chatGreen = Color(hex: "#89FFBE")
+    static let chatGreenNS = NSColor.from(hex: "#89FFBE")
+    static let calendarAmber = Color(hex: "#FFD77A")
+    static let calendarAmberNS = NSColor.from(hex: "#FFD77A")
+    static let filePink = Color(hex: "#FF9EC8")
+    static let filePinkNS = NSColor.from(hex: "#FF9EC8")
+    static let reminderBlue = Color(hex: "#8ED0FF")
+    static let reminderBlueNS = NSColor.from(hex: "#8ED0FF")
+
     // Recall terminal
     static let terminalPrompt = neonCyan
     static let terminalText = Color.white.opacity(0.7)

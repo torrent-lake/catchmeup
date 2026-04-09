@@ -39,6 +39,7 @@ final class StatusBarController: NSObject {
     private let modelAssetService: ModelAssetService
     private let recallController: RecallPanelController
     private let leannBridge: any LEANNBridging
+    private let contextLoader: DayContextLoader
     private let onQuit: () -> Void
     private let onTranscribeNow: () -> Void
     private let onRecordingModeChanged: (RecordingMode) -> Void
@@ -73,6 +74,12 @@ final class StatusBarController: NSObject {
         keyEquivalent: ""
     )
 #endif
+    private let apiSettingsMenuItem = NSMenuItem(
+        title: "API Settings...",
+        action: #selector(handleOpenAPISettings),
+        keyEquivalent: ","
+    )
+    private let apiSettingsController = APISettingsWindowController()
     private var cancellables: Set<AnyCancellable> = []
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
@@ -84,6 +91,7 @@ final class StatusBarController: NSObject {
         modelAssetService: modelAssetService,
         recallController: recallController,
         leannBridge: leannBridge,
+        contextLoader: contextLoader,
         onTranscribeNow: onTranscribeNow
     )
     private lazy var contextMenu: NSMenu = {
@@ -105,6 +113,9 @@ final class StatusBarController: NSObject {
         menu.addItem(debugClaudeProbeMenuItem)
 #endif
         menu.addItem(.separator())
+        apiSettingsMenuItem.target = self
+        menu.addItem(apiSettingsMenuItem)
+        menu.addItem(.separator())
         quitMenuItem.target = self
         menu.addItem(quitMenuItem)
         return menu
@@ -116,6 +127,7 @@ final class StatusBarController: NSObject {
         modelAssetService: ModelAssetService,
         recallController: RecallPanelController,
         leannBridge: any LEANNBridging,
+        contextLoader: DayContextLoader,
         onTranscribeNow: @escaping () -> Void,
         onRecordingModeChanged: @escaping (RecordingMode) -> Void,
         onQuit: @escaping () -> Void
@@ -125,6 +137,7 @@ final class StatusBarController: NSObject {
         self.modelAssetService = modelAssetService
         self.recallController = recallController
         self.leannBridge = leannBridge
+        self.contextLoader = contextLoader
         self.onTranscribeNow = onTranscribeNow
         self.onRecordingModeChanged = onRecordingModeChanged
         self.onQuit = onQuit
@@ -328,6 +341,10 @@ final class StatusBarController: NSObject {
     @objc private func handleQuit() {
         hidePanel()
         onQuit()
+    }
+
+    @objc private func handleOpenAPISettings() {
+        apiSettingsController.show()
     }
 
 #if DEBUG

@@ -19,17 +19,20 @@ actor AgentSession {
     private let llm: any LLMClient
     private let crossRef: CrossRefEngine
     private let composer: PromptComposer
+    private let guardrail: GuardrailGate
     private let defaultSources: [any DataSource]
 
     init(
         llm: any LLMClient,
         crossRef: CrossRefEngine,
         composer: PromptComposer = PromptComposer(),
+        guardrail: GuardrailGate = GuardrailGate(),
         defaultSources: [any DataSource]
     ) {
         self.llm = llm
         self.crossRef = crossRef
         self.composer = composer
+        self.guardrail = guardrail
         self.defaultSources = defaultSources
     }
 
@@ -60,8 +63,10 @@ actor AgentSession {
                     let crossRef = await self.crossRef
                     let composer = await self.composer
 
-                    // 1. Sanitize user input (Slice 2: length cap + control char strip).
-                    let sanitized = Self.sanitizeInput(question)
+                    // 1. Sanitize user input via GuardrailGate.
+                    let guardrail = await self.guardrail
+                    let sanitizedInput = guardrail.sanitizeUserInput(question)
+                    let sanitized = sanitizedInput.text
                     guard !sanitized.isEmpty else {
                         continuation.finish(throwing: AgentSessionError.emptyQuestion)
                         return
@@ -74,7 +79,7 @@ actor AgentSession {
                     continuation.yield(.retrieving(sourceIDs: sourceIDs))
 
                     // 3. Retrieve via CrossRefEngine.
-                    let chunks = await crossRef.gather(
+                    let rawChunks = await crossRef.gather(
                         question: sanitized,
                         sources: sources,
                         topKPerSource: 5,
@@ -86,6 +91,9 @@ actor AgentSession {
                         continuation.finish(throwing: AgentSessionError.cancelled)
                         return
                     }
+
+                    // 3.5. Scrub chunks through guardrail (removes injection payloads).
+                    let chunks = rawChunks.map { guardrail.scrubChunk($0) }
 
                     continuation.yield(.retrieved(chunks: chunks))
 
@@ -121,8 +129,12 @@ actor AgentSession {
                         }
                     }
 
-                    // 5. Final event with the full text + the chunks that were cited.
-                    continuation.yield(.complete(finalText: accumulated, citedChunks: chunks))
+                    // 5. Validate and sanitize output.
+                    let validation = guardrail.validateOutput(accumulated, chunks: chunks)
+                    let finalOutput = validation.sanitizedText
+
+                    // 6. Final event with the full text + the chunks that were cited.
+                    continuation.yield(.complete(finalText: finalOutput, citedChunks: chunks))
                     continuation.finish()
                 } catch is CancellationError {
                     continuation.finish(throwing: AgentSessionError.cancelled)
@@ -137,20 +149,7 @@ actor AgentSession {
         }
     }
 
-    // MARK: - Input sanitization (Slice 2 minimum)
-
-    /// Phase 3 moves this into `GuardrailGate.sanitizeUserInput`. For Slice 2
-    /// we do the bare minimum to keep the pipeline clean: trim whitespace,
-    /// cap length, strip ASCII control chars except newline.
-    nonisolated static func sanitizeInput(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let capped = String(trimmed.prefix(4000))
-        let cleaned = capped.unicodeScalars.filter { scalar in
-            if scalar.value == 0x0A { return true }  // keep newlines
-            return scalar.value >= 0x20  // drop control chars
-        }
-        return String(String.UnicodeScalarView(cleaned))
-    }
+    // Input sanitization is now handled by GuardrailGate.
 }
 
 /// One event in the lifecycle of an `AgentSession.ask(...)` call.

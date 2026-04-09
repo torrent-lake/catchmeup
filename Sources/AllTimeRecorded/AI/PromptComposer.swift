@@ -16,10 +16,12 @@ import Foundation
 /// See `docs/PROMPT_LIBRARY.md` §2 for the structural conventions and
 /// `docs/SECURITY_THREATS.md` §2.1 for the threat model being defended against.
 struct PromptComposer: Sendable {
-    /// The kind of message we're composing. Currently only `.onDemand` is wired
-    /// in Phase 2 Slice 2; pre-meeting brief and daily digest come in later slices.
     enum Kind: Sendable {
         case onDemand
+        case briefing
+        case dailyDigest
+        case proactive
+        case fileAggregation
         case debugProbe
     }
 
@@ -44,6 +46,14 @@ struct PromptComposer: Sendable {
         switch kind {
         case .onDemand:
             system = PromptTemplates.systemOnDemandAnswerV1
+        case .briefing:
+            system = PromptTemplates.systemBriefingV1
+        case .dailyDigest:
+            system = PromptTemplates.systemDailyDigestV1
+        case .proactive:
+            system = PromptTemplates.systemProactiveV1
+        case .fileAggregation:
+            system = PromptTemplates.systemFileAggregationV1
         case .debugProbe:
             system = PromptTemplates.debugProbeSystemV1
         }

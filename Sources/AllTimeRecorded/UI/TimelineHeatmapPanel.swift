@@ -42,6 +42,15 @@ struct TimelineHeatmapPanel: View {
         bins.isEmpty ? DayBinMapper.emptyBins(for: Date()) : bins
     }
 
+    /// Use context-density blended color when a bin has multi-source data;
+    /// otherwise fall back to the original single-source palette.
+    private func binColor(for bin: DayBin) -> Color {
+        if bin.hasContextDensity {
+            return HeatmapPalette.swiftUIContextDensityColor(for: bin, state: state, context: .popover)
+        }
+        return HeatmapPalette.swiftUIColor(for: bin, state: state, context: .popover)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if showsAxisMarkers {
@@ -55,7 +64,7 @@ struct TimelineHeatmapPanel: View {
                 LazyVGrid(columns: columns, spacing: cellSpacing) {
                     ForEach(displayBins) { bin in
                         RoundedRectangle(cornerRadius: max(1, cellWidth * 0.28), style: .continuous)
-                            .fill(HeatmapPalette.swiftUIColor(for: bin, state: state, context: .popover))
+                            .fill(binColor(for: bin))
                             .frame(height: cellHeight)
                     }
                 }

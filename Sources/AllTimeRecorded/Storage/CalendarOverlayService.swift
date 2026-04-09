@@ -87,8 +87,18 @@ final class CalendarOverlayService: ObservableObject, CalendarOverlayProviding {
             allEvents.append(contentsOf: filterEvents(parsed, from: queryStart, to: queryEnd))
         }
 
-        let systemEnabled = Set(config.enabledSystemCalendarIDs)
         let calendars = systemProvider.availableCalendars()
+        var systemEnabled = Set(config.enabledSystemCalendarIDs)
+
+        // Auto-enable all system calendars on first launch (no config file yet).
+        if systemEnabled.isEmpty && !calendars.isEmpty {
+            systemEnabled = Set(calendars.map(\.id))
+            // Persist so the user can selectively disable later.
+            var updated = config
+            updated.enabledSystemCalendarIDs = systemEnabled.sorted()
+            store.save(updated)
+        }
+
         for calendar in calendars {
             allSources.append(
                 CalendarSourceItem(

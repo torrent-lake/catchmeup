@@ -20,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var onboardingWindowController: NSWindowController?
     private var leannBridge: LEANNBridge?
     private var recordingPolicy: (any RecordingPolicy)?
+    private var meetingTriggerWatcher: MeetingTriggerWatcher?
+    private var digestScheduler: DigestScheduler?
+    private var auditLog: AuditLog?
     private var allowManualTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -78,20 +81,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.modelAssetService = modelAssets
             self.transcriptionOrchestrator = transcription
 
-            // Phase 2 Slice 1+2: LLM + agent chat wiring. The agent chain is
-            // built once at launch and re-reads LLMEndpointConfig.snapshot()
-            // each time, so a `defaults write` to the base URL / api format
-            // / default model takes effect on the next app launch.
+            // Multi-source RAG wiring: all data sources are created at launch
+            // and passed to CrossRefEngine. Sources that fail (e.g. no permission)
+            // gracefully return empty results.
             let anthropic = AnthropicClient()
             let crossRef = CrossRefEngine()
+            let audit = AuditLog(fileURL: paths.auditFileURL)
+            self.auditLog = audit
+
+            // Data sources: system-level macOS integration + LEANN indices
             let mailSource = MailDataSource(bridge: leann)
+            let wechatSource = WeChatDataSource(bridge: leann)
+            let wechatRecentSource = WeChatDataSource(
+                bridge: leann,
+                indexName: "wechat_recent"
+            )
+            let calendarSource = CalendarDataSource()
+            let remindersSource = RemindersDataSource()
+            let fileSource = FileDataSource(bridge: leann)
+            let transcriptSource = TranscriptDataSource(bridge: leann)
+            let imessageSource = IMessageDataSource()
+            let photosSource = PhotosOCRDataSource()
+
+            let allSources: [any DataSource] = [
+                mailSource,
+                wechatSource,
+                wechatRecentSource,
+                calendarSource,
+                remindersSource,
+                fileSource,
+                transcriptSource,
+                imessageSource,
+                photosSource,
+            ]
+
             let agentSession = AgentSession(
                 llm: anthropic,
                 crossRef: crossRef,
-                defaultSources: [mailSource]
+                defaultSources: allSources
             )
-            let agentChatViewModel = AgentChatViewModel(session: agentSession)
+
+            let briefing = BriefingService(
+                llm: anthropic,
+                crossRef: crossRef,
+                sources: allSources,
+                paths: paths
+            )
+
+            let agentChatViewModel = AgentChatViewModel(
+                session: agentSession,
+                auditLog: audit,
+                briefingService: briefing
+            )
             let recallController = RecallPanelController(viewModel: agentChatViewModel)
+
+            let contextLoader = DayContextLoader(sources: allSources)
+            contextLoader.loadDay(Date())  // Pre-load today's context
+
+            // Meeting trigger watcher + daily digest scheduler
+            let meetingWatcher = MeetingTriggerWatcher(
+                calendarService: calendarOverlay,
+                briefingService: briefing
+            )
+            meetingWatcher.start()
+            self.meetingTriggerWatcher = meetingWatcher
+
+            let digest = DigestScheduler(briefingService: briefing)
+            digest.start()
+            self.digestScheduler = digest
             self.recallPanelController = recallController
 
             let controller = StatusBarController(
@@ -100,6 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 modelAssetService: modelAssets,
                 recallController: recallController,
                 leannBridge: leann,
+                contextLoader: contextLoader,
                 onTranscribeNow: { [weak transcription] in
                     Task { @MainActor in
                         await transcription?.forceTranscribeAll()
@@ -154,6 +212,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordingService?.stop(reason: .userQuit)
         sleepWakeMonitor?.stop()
         transcriptionOrchestrator?.stop()
+        meetingTriggerWatcher?.stop()
+        digestScheduler?.stop()
         eventStore?.markCleanShutdown()
     }
 
@@ -203,6 +263,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordingService?.stop(reason: .userQuit)
         sleepWakeMonitor?.stop()
         transcriptionOrchestrator?.stop()
+        meetingTriggerWatcher?.stop()
+        digestScheduler?.stop()
         eventStore?.markCleanShutdown()
         NSApp.terminate(nil)
     }

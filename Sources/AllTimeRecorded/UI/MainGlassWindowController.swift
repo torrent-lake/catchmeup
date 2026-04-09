@@ -21,6 +21,7 @@ final class MainGlassWindowController: NSWindowController {
     private let modelAssetService: ModelAssetService
     private let recallController: RecallPanelController
     private let leannBridge: any LEANNBridging
+    private let contextLoader: DayContextLoader
     private let onTranscribeNow: () -> Void
 
     init(
@@ -29,6 +30,7 @@ final class MainGlassWindowController: NSWindowController {
         modelAssetService: ModelAssetService,
         recallController: RecallPanelController,
         leannBridge: any LEANNBridging,
+        contextLoader: DayContextLoader,
         onTranscribeNow: @escaping () -> Void
     ) {
         self.appModel = appModel
@@ -36,6 +38,7 @@ final class MainGlassWindowController: NSWindowController {
         self.modelAssetService = modelAssetService
         self.recallController = recallController
         self.leannBridge = leannBridge
+        self.contextLoader = contextLoader
         self.onTranscribeNow = onTranscribeNow
 
         let window = NSWindow(
@@ -50,6 +53,7 @@ final class MainGlassWindowController: NSWindowController {
             appModel: appModel,
             calendarService: calendarService,
             modelAssetService: modelAssetService,
+            contextLoader: contextLoader,
             showsWindowControls: true,
             onCloseWindow: { window.performClose(nil) },
             onMinimizeWindow: { window.miniaturize(nil) },

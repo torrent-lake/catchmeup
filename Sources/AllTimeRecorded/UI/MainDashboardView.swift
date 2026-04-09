@@ -7,6 +7,7 @@ struct MainDashboardView: View {
     @ObservedObject var appModel: AppModel
     @ObservedObject var calendarService: CalendarOverlayService
     @ObservedObject var modelAssetService: ModelAssetService
+    @ObservedObject var contextLoader: DayContextLoader
     var showsWindowControls: Bool = false
     var onCloseWindow: (() -> Void)? = nil
     var onMinimizeWindow: (() -> Void)? = nil
@@ -53,7 +54,7 @@ struct MainDashboardView: View {
                 header
                 dayNavigator
                 timeline
-                modelControls
+                contextSummaryBar
             }
             .padding(14)
         }
@@ -80,6 +81,7 @@ struct MainDashboardView: View {
             refreshTranscriptionHealth()
             refreshWhisperStatus()
             scheduleCalendarReload(for: selectedDay, delayNanoseconds: 0)
+            contextLoader.loadDay(selectedDay)
             transcriptionRefreshTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { _ in
                 Task { @MainActor in
                     refreshTranscriptionHealth()
@@ -100,6 +102,7 @@ struct MainDashboardView: View {
             pinnedArc = nil
             pinnedLocation = nil
             scheduleCalendarReload(for: normalized)
+            contextLoader.loadDay(normalized)
         }
         .onDisappear {
             calendarReloadTask?.cancel()
@@ -119,10 +122,10 @@ struct MainDashboardView: View {
                 windowControls
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text("AllTimeRecorded")
+                Text("Catch Me Up")
                     .font(.system(.title2, design: .rounded).weight(.semibold))
                     .foregroundStyle(.white)
-                Text("Open-lid audio, local text pickup")
+                Text("Your context, always within reach")
                     .font(.system(.caption, design: .rounded))
                     .foregroundStyle(.white.opacity(0.6))
             }
@@ -131,30 +134,11 @@ struct MainDashboardView: View {
             iconButton(systemName: "calendar.badge.plus", help: "Calendar Sources") {
                 showingCalendarManager = true
             }
-            iconButton(systemName: "folder", help: "Open Recording Folder") {
-                openRecordingFolder()
-            }
             if let onToggleRecall {
-                iconButton(systemName: "terminal", help: "Recall Terminal") {
+                iconButton(systemName: "magnifyingglass", help: "Ask CatchMeUp") {
                     onToggleRecall()
                 }
             }
-
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(stateColor.opacity(pulse && appModel.snapshot.state == .recording ? 1 : 0.55))
-                    .frame(width: 8, height: 8)
-                Text(appModel.stateTitle)
-                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Color.black.opacity(0.14), in: Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
-            )
-            .foregroundStyle(stateColor)
         }
     }
 
@@ -429,6 +413,333 @@ struct MainDashboardView: View {
         )
     }
 
+    // MARK: - Word Cloud
+
+    private var contextSummaryBar: some View {
+        let words: [WordCloudEntry]
+        if let bin = hoveredBin {
+            words = wordCloudForBin(bin)
+        } else {
+            words = wordCloudForDay()
+        }
+
+        return ZStack {
+            if words.isEmpty {
+                Text("Hover over the timeline to explore context")
+                    .font(.system(.caption2, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.3))
+            } else {
+                GeometryReader { geo in
+                    let area = geo.size
+                    ForEach(Array(words.enumerated()), id: \.element.text) { index, w in
+                        let pos = pseudoRandomPosition(
+                            index: index,
+                            total: words.count,
+                            in: area,
+                            wordSize: w.size
+                        )
+                        FloatingWord(
+                            text: w.text,
+                            fontSize: w.size,
+                            weight: w.weight,
+                            color: w.color,
+                            opacity: w.opacity,
+                            basePosition: pos,
+                            index: index
+                        )
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 80)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 0.7)
+        )
+        .animation(.easeInOut(duration: 0.2), value: hoveredBin?.index0to95)
+    }
+
+    /// Deterministic but organic-looking positions for word cloud items.
+    /// Uses a golden-ratio spiral to fill the full width of the container.
+    private func pseudoRandomPosition(
+        index: Int,
+        total: Int,
+        in area: CGSize,
+        wordSize: CGFloat
+    ) -> CGPoint {
+        let goldenAngle = 2.399963 // radians (137.508 degrees)
+        let angle = Double(index) * goldenAngle
+
+        // Use the full container — radius scales with the smaller dimension
+        let maxRadiusX = area.width * 0.42
+        let maxRadiusY = area.height * 0.38
+        let t = Double(index + 1) / Double(max(total, 1))
+        let r = sqrt(t)
+
+        // Jitter so words don't sit on a perfect spiral
+        let jitterX = sin(Double(index) * 3.7 + 0.5) * 18
+        let jitterY = cos(Double(index) * 2.3 + 1.2) * 10
+
+        let cx = area.width * 0.5
+        let cy = area.height * 0.5
+        let x = cx + cos(angle) * maxRadiusX * r + jitterX
+        let y = cy + sin(angle) * maxRadiusY * r + jitterY
+
+        // Clamp so text doesn't clip outside the view
+        let padX = wordSize * 1.5
+        let padY = wordSize * 0.6
+        return CGPoint(
+            x: min(max(padX, x), area.width - padX),
+            y: min(max(padY, y), area.height - padY)
+        )
+    }
+
+    private struct WordCloudEntry: Hashable {
+        let text: String
+        let size: CGFloat
+        let weight: Font.Weight
+        let color: Color
+        let opacity: Double
+
+        func hash(into hasher: inout Hasher) { hasher.combine(text) }
+        static func == (lhs: Self, rhs: Self) -> Bool { lhs.text == rhs.text }
+    }
+
+    /// Word cloud for the entire day.
+    private func wordCloudForDay() -> [WordCloudEntry] {
+        var freq: [String: (count: Int, color: Color)] = [:]
+        let events = calendarService.currentEvents
+
+        // Calendar event titles + notes
+        for event in events {
+            for w in tokenize(event.title) {
+                freq[w, default: (0, Theme.calendarAmber)].count += 2
+            }
+            if let notes = event.notePreview {
+                for w in tokenize(notes) {
+                    freq[w, default: (0, Theme.calendarAmber)].count += 1
+                }
+            }
+            if let loc = event.location, !loc.isEmpty {
+                for w in tokenize(loc) {
+                    freq[w, default: (0, Theme.calendarAmber)].count += 1
+                }
+            }
+        }
+
+        // Transcript words (cyan) — read the day's transcript file
+        let transcriptWords = loadTranscriptWords(for: selectedDay)
+        for w in transcriptWords {
+            freq[w, default: (0, Theme.neonCyan)].count += 1
+        }
+
+        // LEANN email chunks (violet)
+        for chunk in contextLoader.emailChunks {
+            for w in tokenize(chunk.body).prefix(20) {
+                freq[w, default: (0, Theme.emailViolet)].count += 1
+            }
+        }
+
+        // LEANN chat chunks (green)
+        for chunk in contextLoader.chatChunks {
+            for w in tokenize(chunk.body).prefix(20) {
+                freq[w, default: (0, Theme.chatGreen)].count += 1
+            }
+        }
+
+        return buildCloud(from: freq)
+    }
+
+    /// Load transcript text for a given day and extract top words.
+    private func loadTranscriptWords(for day: Date) -> [String] {
+        let cal = Calendar.current
+        let y = cal.component(.year, from: day)
+        let m = cal.component(.month, from: day)
+        let d = cal.component(.day, from: day)
+        let folder = String(format: "%04d-%02d-%02d", y, m, d)
+        let paths = AppPaths()
+        let txtURL = paths.transcriptsRoot
+            .appendingPathComponent(folder)
+            .appendingPathComponent("day-transcript.txt")
+
+        guard let content = try? String(contentsOf: txtURL, encoding: .utf8) else {
+            return []
+        }
+
+        // Extract words, skip timestamps like [HH:MM:SS-HH:MM:SS]
+        let cleaned = content.replacingOccurrences(
+            of: #"\[\d{2}:\d{2}:\d{2}-\d{2}:\d{2}:\d{2}\]"#,
+            with: "",
+            options: .regularExpression
+        )
+        return tokenize(cleaned)
+    }
+
+    /// Load transcript words for a specific 15-min bin by filtering timestamp lines.
+    private func loadTranscriptWordsForBin(_ bin: DayBin) -> [String] {
+        let cal = Calendar.current
+        let y = cal.component(.year, from: selectedDay)
+        let m = cal.component(.month, from: selectedDay)
+        let d = cal.component(.day, from: selectedDay)
+        let folder = String(format: "%04d-%02d-%02d", y, m, d)
+        let paths = AppPaths()
+        let txtURL = paths.transcriptsRoot
+            .appendingPathComponent(folder)
+            .appendingPathComponent("day-transcript.txt")
+
+        guard let content = try? String(contentsOf: txtURL, encoding: .utf8) else {
+            return []
+        }
+
+        // Parse timestamps and filter to the bin's time window
+        let binStartSec = bin.startAt.timeIntervalSince(cal.startOfDay(for: selectedDay))
+        let binEndSec = bin.endAt.timeIntervalSince(cal.startOfDay(for: selectedDay))
+
+        var words: [String] = []
+        for line in content.split(separator: "\n") {
+            // Format: [HH:MM:SS-HH:MM:SS] text
+            guard line.hasPrefix("["),
+                  let closeBracket = line.firstIndex(of: "]"),
+                  let dash = line[line.startIndex...closeBracket].firstIndex(of: "-")
+            else { continue }
+
+            let startStr = line[line.index(after: line.startIndex)..<dash]
+            let parts = startStr.split(separator: ":")
+            guard parts.count == 3,
+                  let h = Int(parts[0]),
+                  let m = Int(parts[1]),
+                  let s = Int(parts[2])
+            else { continue }
+
+            let lineSec = Double(h * 3600 + m * 60 + s)
+            if lineSec >= binStartSec && lineSec < binEndSec {
+                let text = String(line[line.index(after: closeBracket)...])
+                words.append(contentsOf: tokenize(text))
+            }
+        }
+        return words
+    }
+
+    /// Word cloud for a single hovered bin.
+    private func wordCloudForBin(_ bin: DayBin) -> [WordCloudEntry] {
+        var freq: [String: (count: Int, color: Color)] = [:]
+
+        let overlapping = calendarService.currentEvents.filter { event in
+            event.startAt < bin.endAt && event.endAt > bin.startAt
+        }
+
+        for event in overlapping {
+            for w in tokenize(event.title) {
+                freq[w, default: (0, Theme.calendarAmber)].count += 3
+            }
+            if let notes = event.notePreview {
+                for w in tokenize(notes) {
+                    freq[w, default: (0, Theme.calendarAmber)].count += 1
+                }
+            }
+        }
+
+        // Transcript words for this time window (cyan)
+        let transcriptWords = loadTranscriptWordsForBin(bin)
+        for w in transcriptWords {
+            freq[w, default: (0, Theme.neonCyan)].count += 1
+        }
+
+        if bin.status == .recorded {
+            freq["audio", default: (0, Theme.neonCyan)].count += 2
+            freq["recorded", default: (0, Theme.neonCyan)].count += 1
+        }
+
+        if freq.isEmpty {
+            let df = DateFormatter()
+            df.dateFormat = "HH:mm"
+            freq[df.string(from: bin.startAt), default: (0, .white)].count += 1
+            freq["idle", default: (0, .white)].count += 1
+        }
+
+        return buildCloud(from: freq)
+    }
+
+    private func tokenize(_ text: String) -> [String] {
+        let stops: Set<String> = [
+            "the", "a", "an", "is", "are", "was", "were", "be", "been",
+            "have", "has", "had", "do", "does", "did", "will", "would",
+            "could", "should", "may", "might", "can", "about", "what",
+            "when", "where", "who", "how", "which", "that", "this", "with",
+            "from", "for", "and", "but", "or", "not", "in", "on", "at",
+            "to", "of", "by", "no", "if", "so", "up", "out", "just",
+            "also", "very", "too", "only", "it", "its", "we", "our",
+            "my", "me", "you", "your", "they", "their", "he", "she",
+            "all", "any", "some", "more", "than", "as",
+            "de", "la", "le", "les", "du", "des", "et", "en",
+        ]
+        return text
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .map { $0.lowercased() }
+            .filter { $0.count > 2 && !stops.contains($0) }
+    }
+
+    private func buildCloud(from freq: [String: (count: Int, color: Color)]) -> [WordCloudEntry] {
+        let sorted = freq.sorted { $0.value.count > $1.value.count }
+        let maxCount = sorted.first?.value.count ?? 1
+
+        return sorted.prefix(15).map { key, value in
+            let ratio = Double(value.count) / Double(max(maxCount, 1))
+            let size: CGFloat = 10 + ratio * 16  // 10pt to 26pt
+            let weight: Font.Weight = ratio > 0.6 ? .bold : ratio > 0.3 ? .semibold : .regular
+            let opacity = 0.4 + ratio * 0.5
+
+            return WordCloudEntry(
+                text: key,
+                size: size,
+                weight: weight,
+                color: value.color,
+                opacity: opacity
+            )
+        }.shuffled()
+    }
+
+    // MARK: - Floating word cloud item
+
+    /// A single word that gently drifts around its base position.
+    private struct FloatingWord: View {
+        let text: String
+        let fontSize: CGFloat
+        let weight: Font.Weight
+        let color: Color
+        let opacity: Double
+        let basePosition: CGPoint
+        let index: Int
+
+        @State private var phase: Double = 0
+
+        var body: some View {
+            let dx = sin(phase + Double(index) * 1.3) * 4
+            let dy = cos(phase * 0.7 + Double(index) * 0.9) * 3
+
+            Text(text)
+                .font(.system(size: fontSize, weight: weight, design: .rounded))
+                .foregroundStyle(color.opacity(opacity))
+                .position(
+                    x: basePosition.x + dx,
+                    y: basePosition.y + dy
+                )
+                .onAppear {
+                    // Each word gets a unique slow animation cycle
+                    let duration = 3.0 + Double(index % 5) * 0.8
+                    withAnimation(
+                        .easeInOut(duration: duration)
+                        .repeatForever(autoreverses: true)
+                    ) {
+                        phase = .pi * 2
+                    }
+                }
+        }
+    }
+
     private func iconButton(systemName: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
@@ -591,10 +902,21 @@ struct MainDashboardView: View {
     }
 
     private var displayBins: [DayBin] {
+        let baseBins: [DayBin]
         if isSelectedDayToday {
-            return appModel.snapshot.bins
+            baseBins = appModel.snapshot.bins
+        } else {
+            baseBins = historyStore.bins(for: selectedDay)
         }
-        return historyStore.bins(for: selectedDay)
+        // Enrich with context density from ALL sources.
+        return ContextDensityBinMapper.merge(
+            recordingBins: baseBins,
+            emailChunks: contextLoader.emailChunks,
+            chatChunks: contextLoader.chatChunks,
+            fileChunks: contextLoader.fileChunks,
+            calendarEvents: calendarService.currentEvents,
+            day: selectedDay
+        )
     }
 
     private var displayState: RecorderState {

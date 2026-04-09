@@ -83,7 +83,20 @@ struct DayBin: Identifiable, Codable, Sendable {
     var status: DayBinStatus
     var recordingIntensity: Double = 0
 
+    // Context density fields (0-1 each). Default to 0 for backward compatibility.
+    var emailDensity: Double = 0
+    var chatDensity: Double = 0
+    var fileDensity: Double = 0
+    var calendarDensity: Double = 0
+    var reminderDensity: Double = 0
+
     var id: Int { index0to95 }
+
+    /// True when at least one context-density source has data in this bin.
+    var hasContextDensity: Bool {
+        emailDensity > 0 || chatDensity > 0 || fileDensity > 0
+            || calendarDensity > 0 || reminderDensity > 0
+    }
 }
 
 enum RecordingStopReason: String, Sendable {
