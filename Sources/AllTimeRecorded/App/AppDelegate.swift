@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        installEditMenu()
 
         do {
             let paths = AppPaths()
@@ -100,8 +101,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let remindersSource = RemindersDataSource()
             let fileSource = FileDataSource(bridge: leann)
             let transcriptSource = TranscriptDataSource(bridge: leann)
-            let imessageSource = IMessageDataSource()
-            let photosSource = PhotosOCRDataSource()
+            // iMessage + files via LEANN (clean architecture, no SQLite hacks)
+            let imessageSource = WeChatDataSource(bridge: leann, indexName: "imessage_index")
+            let filesLeannSource = TranscriptDataSource(bridge: leann, indexName: "files_index")
 
             let allSources: [any DataSource] = [
                 mailSource,
@@ -109,10 +111,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 wechatRecentSource,
                 calendarSource,
                 remindersSource,
-                fileSource,
+                fileSource,        // Spotlight for live search
                 transcriptSource,
-                imessageSource,
-                photosSource,
+                imessageSource,    // LEANN index (was SQLite)
+                filesLeannSource,  // LEANN index for document content
             ]
 
             let agentSession = AgentSession(
@@ -135,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             let recallController = RecallPanelController(viewModel: agentChatViewModel)
 
-            let contextLoader = DayContextLoader(sources: allSources)
+            let contextLoader = DayContextLoader(sources: allSources, llm: anthropic)
             contextLoader.loadDay(Date())  // Pre-load today's context
 
             // Meeting trigger watcher + daily digest scheduler
@@ -309,6 +311,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.onboardingWindowController = controller
+    }
+
+    /// Accessory apps have no menu bar, so ⌘V / ⌘C / ⌘A / ⌘X don't work
+    /// in text fields. We install a hidden Edit menu so the standard key
+    /// equivalents route through the responder chain.
+    private func installEditMenu() {
+        let mainMenu = NSApp.mainMenu ?? NSMenu()
+        NSApp.mainMenu = mainMenu
+
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        let editMenuItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
     }
 
     private func registerLoginItemIfPossible() {

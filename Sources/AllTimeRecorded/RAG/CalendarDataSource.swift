@@ -32,21 +32,34 @@ final class CalendarDataSource: DataSource, @unchecked Sendable {
         )
         let events = eventStore.events(matching: predicate)
 
-        // Keyword filter: extract words from the question and match against
-        // event title, location, notes.
         let keywords = Self.extractKeywords(from: question)
+        let lowerQ = question.lowercased()
 
-        let matched: [(event: EKEvent, relevance: Double)] = events.compactMap { event in
-            let searchable = [
-                event.title ?? "",
-                event.location ?? "",
-                event.notes ?? "",
-            ].joined(separator: " ").lowercased()
+        // Detect "schedule" / "calendar" / "日程" type queries — return ALL events
+        let isScheduleQuery = lowerQ.contains("schedule") || lowerQ.contains("calendar")
+            || lowerQ.contains("meeting") || lowerQ.contains("event")
+            || lowerQ.contains("日程") || lowerQ.contains("日历") || lowerQ.contains("安排")
+            || lowerQ.contains("today") || lowerQ.contains("tomorrow") || lowerQ.contains("week")
+            || lowerQ.contains("今天") || lowerQ.contains("明天") || lowerQ.contains("这周")
 
-            let hits = keywords.filter { searchable.contains($0) }
-            guard !hits.isEmpty else { return nil }
-            let relevance = Double(hits.count) / Double(max(keywords.count, 1))
-            return (event, relevance)
+        let matched: [(event: EKEvent, relevance: Double)]
+        if isScheduleQuery {
+            // Return all events sorted by start time
+            matched = events.map { ($0, 0.8) }
+        } else {
+            // Keyword filter for specific queries
+            matched = events.compactMap { event in
+                let searchable = [
+                    event.title ?? "",
+                    event.location ?? "",
+                    event.notes ?? "",
+                ].joined(separator: " ").lowercased()
+
+                let hits = keywords.filter { searchable.contains($0) }
+                guard !hits.isEmpty else { return nil }
+                let relevance = Double(hits.count) / Double(max(keywords.count, 1))
+                return (event, relevance)
+            }
         }
 
         let sorted = matched

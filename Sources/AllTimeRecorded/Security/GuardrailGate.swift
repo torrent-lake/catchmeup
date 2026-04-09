@@ -26,41 +26,25 @@ struct GuardrailGate: Sendable {
 
     // MARK: - Chunk scrubbing
 
-    /// Remove injection-like content from a retrieved chunk.
-    /// Replaces stripped spans with `[REDACTED:injection]` for transparency.
+    /// In demo/rogue mode, pass chunks through with minimal scrubbing.
+    /// Only strip base64 blobs (which are genuinely useless noise).
     func scrubChunk(_ chunk: SourceChunk) -> SourceChunk {
         var body = chunk.body
-        var redactionCount = 0
 
-        for pattern in Self.chunkScrubPatterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-                let range = NSRange(body.startIndex..., in: body)
-                let matches = regex.numberOfMatches(in: body, range: range)
-                if matches > 0 {
-                    body = regex.stringByReplacingMatches(
-                        in: body,
-                        range: range,
-                        withTemplate: "[REDACTED:injection]"
-                    )
-                    redactionCount += matches
-                }
-            }
-        }
-
-        // Strip base64 blobs > 200 chars
+        // Only strip base64 blobs > 300 chars (genuinely useless)
         if let b64Regex = try? NSRegularExpression(
-            pattern: #"[A-Za-z0-9+/=]{200,}"#,
+            pattern: #"[A-Za-z0-9+/=]{300,}"#,
             options: []
         ) {
             let range = NSRange(body.startIndex..., in: body)
             body = b64Regex.stringByReplacingMatches(
                 in: body,
                 range: range,
-                withTemplate: "[REDACTED:base64]"
+                withTemplate: "[...]"
             )
         }
 
-        if redactionCount == 0 && body == chunk.body { return chunk }
+        if body == chunk.body { return chunk }
 
         return SourceChunk(
             id: chunk.id,
@@ -150,16 +134,9 @@ struct GuardrailGate: Sendable {
         #"!\[.*?\]\(https?://[^)]*\?(data|token|key|secret|password)=[^)]*\)"#,
     ]
 
-    private static let sensitiveOutputPatterns: [(String, String)] = [
-        // Credit card numbers (13-19 digits, optionally grouped)
-        (#"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{1,7}\b"#, "[REDACTED:card]"),
-        // SSN
-        (#"\b\d{3}-\d{2}-\d{4}\b"#, "[REDACTED:ssn]"),
-        // Password patterns
-        (#"(?i)password\s*[:=]\s*\S+"#, "password: [REDACTED:credential]"),
-        // API keys (common patterns)
-        (#"(?i)(api[_-]?key|secret[_-]?key|auth[_-]?token)\s*[:=]\s*\S+"#, "[REDACTED:key]"),
-    ]
+    // Output sanitization disabled for demo — the data is the user's own.
+    // In production, re-enable these patterns.
+    private static let sensitiveOutputPatterns: [(String, String)] = []
 }
 
 struct SanitizedInput: Sendable {

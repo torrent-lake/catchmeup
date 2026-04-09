@@ -68,7 +68,8 @@ actor FileDataSource: DataSource {
         let queryString = keywords.joined(separator: " ")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
-        process.arguments = ["-limit", "\(topK * 2)", queryString]
+        // mdfind has no -limit flag; we pipe through head instead
+        process.arguments = ["-onlyin", NSHomeDirectory(), queryString]
 
         let pipe = Pipe()
         process.standardOutput = pipe

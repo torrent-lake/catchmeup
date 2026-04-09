@@ -82,9 +82,9 @@ actor AgentSession {
                     let rawChunks = await crossRef.gather(
                         question: sanitized,
                         sources: sources,
-                        topKPerSource: 5,
-                        budgetChunks: 12,
-                        deadline: Date().addingTimeInterval(10)
+                        topKPerSource: 10,
+                        budgetChunks: 20,
+                        deadline: Date().addingTimeInterval(15)
                     )
 
                     if Task.isCancelled {
@@ -92,7 +92,7 @@ actor AgentSession {
                         return
                     }
 
-                    // 3.5. Scrub chunks through guardrail (removes injection payloads).
+                    // 3.5. Scrub chunks through guardrail.
                     let chunks = rawChunks.map { guardrail.scrubChunk($0) }
 
                     continuation.yield(.retrieved(chunks: chunks))
@@ -110,7 +110,7 @@ actor AgentSession {
                         userMessage: user,
                         model: nil,
                         temperature: 0.2,
-                        maxTokens: 1200
+                        maxTokens: 2000
                     )
 
                     for try await event in llmStream {
@@ -149,7 +149,27 @@ actor AgentSession {
         }
     }
 
-    // Input sanitization is now handled by GuardrailGate.
+    /// Filter out low-quality chunks that are mostly noise: base64 blobs,
+    /// tracking URLs, HTML tags, email headers with no body text.
+    nonisolated static func isUsableChunk(_ chunk: SourceChunk) -> Bool {
+        let body = chunk.body
+        // Too short to be useful
+        if body.count < 20 { return false }
+
+        // Count "readable" characters vs total
+        let alphanumeric = body.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == " " }.count
+        let ratio = Double(alphanumeric) / Double(max(body.count, 1))
+
+        // If less than 40% of the content is readable text, it's junk
+        if ratio < 0.4 { return false }
+
+        // Detect tracking URL spam
+        let urlCount = body.components(separatedBy: "http").count - 1
+        let wordCount = body.split(whereSeparator: { !$0.isLetter }).count
+        if urlCount > 3 && Double(urlCount) / Double(max(wordCount, 1)) > 0.3 { return false }
+
+        return true
+    }
 }
 
 /// One event in the lifecycle of an `AgentSession.ask(...)` call.

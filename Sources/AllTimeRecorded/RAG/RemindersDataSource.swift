@@ -70,6 +70,14 @@ final class RemindersDataSource: DataSource, @unchecked Sendable {
             || lowerQuestion.contains("待办")
             || lowerQuestion.contains("忘记")
             || lowerQuestion.contains("forget")
+            || lowerQuestion.contains("schedule")
+            || lowerQuestion.contains("日程")
+            || lowerQuestion.contains("today")
+            || lowerQuestion.contains("tomorrow")
+            || lowerQuestion.contains("今天")
+            || lowerQuestion.contains("明天")
+            || lowerQuestion.contains("deadline")
+            || lowerQuestion.contains("due")
 
         let matched: [(reminder: SendableReminder, relevance: Double)] = allReminders.compactMap { reminder in
             let searchable = [

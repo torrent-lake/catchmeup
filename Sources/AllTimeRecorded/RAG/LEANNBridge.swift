@@ -83,6 +83,30 @@ actor LEANNBridge: LEANNBridging {
         ])
     }
 
+    func ask(index: String, query: String, topK: Int) async throws -> String {
+        // Read the user's LLM config to pass to LEANN
+        let config = LLMEndpointConfig.snapshot()
+        let token = KeychainStore.readLLMAuthToken() ?? ""
+
+        var args = [
+            "ask",
+            index,
+            query,
+            "--llm", "anthropic",
+            "--model", config.defaultModel,
+            "--top-k", "\(topK)",
+        ]
+        if !token.isEmpty {
+            args += ["--api-key", token]
+        }
+        let baseURL = config.baseURL.absoluteString
+        if !baseURL.contains("api.anthropic.com") {
+            args += ["--api-base", baseURL]
+        }
+
+        return try await runCapturing(arguments: args, timeoutSeconds: 30)
+    }
+
     // MARK: - Subprocess plumbing
 
     private func resolveBinary() throws -> URL {
@@ -116,6 +140,14 @@ actor LEANNBridge: LEANNBridging {
             let process = Process()
             process.executableURL = binary
             process.arguments = arguments
+
+            // LEANN must run from its install directory so it can find
+            // .leann/indexes/. The binary lives at <leann-root>/.venv/bin/leann,
+            // so we go up 3 levels to get the project root.
+            let leannRoot = binary.deletingLastPathComponent()  // .venv/bin/
+                .deletingLastPathComponent()                     // .venv/
+                .deletingLastPathComponent()                     // leann project root
+            process.currentDirectoryURL = leannRoot
 
             // Inherit env but clear any stale venv activation; leann shim handles its own venv.
             var env = ProcessInfo.processInfo.environment
@@ -189,12 +221,13 @@ actor LEANNBridge: LEANNBridging {
             let body = currentBody.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
             if !body.isEmpty {
                 let title = String(body.prefix(60))
+                let timestamp = Self.extractDate(from: body)
                 chunks.append(SourceChunk(
                     id: "\(sourceID)#\(indexName)-\(chunkIndex)",
                     sourceID: sourceID,
                     title: title,
                     body: body,
-                    timestamp: nil,
+                    timestamp: timestamp,
                     originURI: nil,
                     score: currentScore
                 ))
@@ -224,6 +257,61 @@ actor LEANNBridge: LEANNBridging {
         flush()
 
         return chunks
+    }
+
+    /// Extract a date from chunk body text. Tries multiple patterns found in
+    /// LEANN search output: email Date headers, chat timestamps, transcript markers.
+    nonisolated static func extractDate(from text: String) -> Date? {
+        // Pattern 1: Email [Date]: header — "Wed, 24 Sep 2025 19:00:00 -0400"
+        if let range = text.range(of: #"\[Date\]:\s*(.+)"#, options: .regularExpression) {
+            let dateStr = String(text[range]).replacingOccurrences(
+                of: #"\[Date\]:\s*"#, with: "", options: .regularExpression
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "en_US_POSIX")
+            for fmt in [
+                "EEE, dd MMM yyyy HH:mm:ss Z",
+                "EEE, dd MMM yyyy HH:mm:ss ZZZZZ",
+                "dd MMM yyyy HH:mm:ss Z",
+            ] {
+                df.dateFormat = fmt
+                if let d = df.date(from: dateStr) { return d }
+            }
+        }
+
+        // Pattern 2: Chat timestamp — "[2026-04-08 17:32]"
+        if let range = text.range(of: #"\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\]"#, options: .regularExpression) {
+            let match = String(text[range]).dropFirst().dropLast()  // remove [ ]
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "en_US_POSIX")
+            df.dateFormat = "yyyy-MM-dd HH:mm"
+            if let d = df.date(from: String(match)) { return d }
+        }
+
+        // Pattern 3: Transcript timestamp — "[14:13:07-14:13:17]"
+        if let range = text.range(of: #"\[(\d{2}:\d{2}:\d{2})-"#, options: .regularExpression) {
+            let match = String(text[range]).dropFirst()  // remove [
+            let timeStr = String(match.prefix(8))
+            // Use today as the date base
+            let cal = Calendar.current
+            let parts = timeStr.split(separator: ":")
+            if parts.count == 3, let h = Int(parts[0]), let m = Int(parts[1]), let s = Int(parts[2]) {
+                var dc = cal.dateComponents(in: .current, from: Date())
+                dc.hour = h; dc.minute = m; dc.second = s
+                return cal.date(from: dc)
+            }
+        }
+
+        // Pattern 4: ISO-ish date anywhere — "2026-04-08"
+        if let range = text.range(of: #"(20\d{2}-\d{2}-\d{2})"#, options: .regularExpression) {
+            let dateStr = String(text[range])
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "en_US_POSIX")
+            df.dateFormat = "yyyy-MM-dd"
+            if let d = df.date(from: dateStr) { return d }
+        }
+
+        return nil
     }
 
     private nonisolated func indexToSourceID(_ index: String) -> String {

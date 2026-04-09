@@ -82,6 +82,7 @@ struct MainDashboardView: View {
             refreshWhisperStatus()
             scheduleCalendarReload(for: selectedDay, delayNanoseconds: 0)
             contextLoader.loadDay(selectedDay)
+            triggerAIKeywords(for: selectedDay)
             transcriptionRefreshTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { _ in
                 Task { @MainActor in
                     refreshTranscriptionHealth()
@@ -103,6 +104,7 @@ struct MainDashboardView: View {
             pinnedLocation = nil
             scheduleCalendarReload(for: normalized)
             contextLoader.loadDay(normalized)
+            triggerAIKeywords(for: normalized)
         }
         .onDisappear {
             calendarReloadTask?.cancel()
@@ -415,97 +417,221 @@ struct MainDashboardView: View {
 
     // MARK: - Word Cloud
 
+    // MARK: - Context Ripple Cloud
+
     private var contextSummaryBar: some View {
-        let words: [WordCloudEntry]
-        if let bin = hoveredBin {
-            words = wordCloudForBin(bin)
-        } else {
-            words = wordCloudForDay()
+        ContextRippleView(
+            calendarService: calendarService,
+            contextLoader: contextLoader,
+            selectedDay: selectedDay,
+            tokenize: tokenize,
+            loadTranscriptWords: loadTranscriptWords
+        )
+        .frame(maxWidth: .infinity)
+        .frame(height: 96)
+        .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    /// Ripple animation: words appear at random positions and radiate
+    /// outward as concentric neonCyan waves, then fade. Borrowed from
+    /// AllTimeRecorded's ASCIIBackgroundView, scaled up for readability.
+    private struct ContextRippleView: View {
+        @ObservedObject var calendarService: CalendarOverlayService
+        @ObservedObject var contextLoader: DayContextLoader
+        let selectedDay: Date
+        let tokenize: (String) -> [String]
+        let loadTranscriptWords: (Date) -> [String]
+
+        private let cols = 36
+        private let rows = 5
+        private let cellW: CGFloat = 14
+        private let cellH: CGFloat = 18
+
+        @State private var cells: [CellState] = []
+        @State private var ripples: [Ripple] = []
+        @State private var tick: UInt64 = 0
+        @State private var timer: Timer?
+
+        /// Reactively computed from observed data
+        private var words: [String] {
+            var w: [String] = []
+            for event in calendarService.currentEvents {
+                w.append(contentsOf: tokenize(event.title))
+            }
+            w.append(contentsOf: Array(loadTranscriptWords(selectedDay).prefix(30)))
+            for chunk in contextLoader.emailChunks {
+                w.append(contentsOf: tokenize(chunk.title).prefix(3))
+            }
+            for chunk in contextLoader.chatChunks {
+                w.append(contentsOf: tokenize(chunk.title).prefix(3))
+            }
+            let unique = Array(Set(w))
+            return unique.isEmpty ? ["catch", "me", "up"] : unique
         }
 
-        return ZStack {
-            if words.isEmpty {
-                Text("Hover over the timeline to explore context")
-                    .font(.system(.caption2, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.3))
-            } else {
-                GeometryReader { geo in
-                    let area = geo.size
-                    ForEach(Array(words.enumerated()), id: \.element.text) { index, w in
-                        let pos = pseudoRandomPosition(
-                            index: index,
-                            total: words.count,
-                            in: area,
-                            wordSize: w.size
-                        )
-                        FloatingWord(
-                            text: w.text,
-                            fontSize: w.size,
-                            weight: w.weight,
-                            color: w.color,
-                            opacity: w.opacity,
-                            basePosition: pos,
-                            index: index
-                        )
+        private struct CellState {
+            var char: Character = " "
+            var brightness: Double = 0
+        }
+
+        private struct Ripple {
+            let centerCol: Int
+            let centerRow: Int
+            let word: String
+            let bornTick: UInt64
+            let charOffset: Int
+        }
+
+        var body: some View {
+            Canvas { context, size in
+                guard !cells.isEmpty else { return }
+                for row in 0..<rows {
+                    for col in 0..<cols {
+                        let idx = row * cols + col
+                        guard idx < cells.count else { continue }
+                        let cell = cells[idx]
+                        guard cell.brightness > 0.008 else { continue }
+                        let x = CGFloat(col) * cellW + 6
+                        let y = CGFloat(row) * cellH + 4
+                        let text = Text(String(cell.char))
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Theme.neonCyan.opacity(min(1, cell.brightness * 3.0)))
+                        context.draw(text, at: CGPoint(x: x, y: y), anchor: .topLeading)
                     }
                 }
             }
+            .onAppear {
+                cells = Array(repeating: CellState(), count: cols * rows)
+                // Debug: log what words we got
+                FileHandle.standardError.write(
+                    Data("[ContextRipple] onAppear with \(words.count) words: \(words.prefix(5))\n".utf8)
+                )
+                timer = Timer.scheduledTimer(withTimeInterval: 0.10, repeats: true) { _ in
+                    step()
+                }
+            }
+            .onDisappear {
+                timer?.invalidate()
+                timer = nil
+            }
+            .onChange(of: calendarService.currentEvents.count) { _, _ in
+                // Reset ripples when calendar data changes (day switch)
+                ripples = []
+                for i in cells.indices { cells[i] = CellState() }
+                tick = 0
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 80)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 0.7)
-        )
-        .animation(.easeInOut(duration: 0.2), value: hoveredBin?.index0to95)
-    }
 
-    /// Deterministic but organic-looking positions for word cloud items.
-    /// Uses a golden-ratio spiral to fill the full width of the container.
-    private func pseudoRandomPosition(
-        index: Int,
-        total: Int,
-        in area: CGSize,
-        wordSize: CGFloat
-    ) -> CGPoint {
-        let goldenAngle = 2.399963 // radians (137.508 degrees)
-        let angle = Double(index) * goldenAngle
+        private func step() {
+            guard !cells.isEmpty else { return }
+            tick += 1
 
-        // Use the full container — radius scales with the smaller dimension
-        let maxRadiusX = area.width * 0.42
-        let maxRadiusY = area.height * 0.38
-        let t = Double(index + 1) / Double(max(total, 1))
-        let r = sqrt(t)
+            // Decay
+            for i in cells.indices {
+                cells[i].brightness *= 0.86
+                if cells[i].brightness < 0.008 {
+                    cells[i].brightness = 0
+                    cells[i].char = " "
+                }
+            }
 
-        // Jitter so words don't sit on a perfect spiral
-        let jitterX = sin(Double(index) * 3.7 + 0.5) * 18
-        let jitterY = cos(Double(index) * 2.3 + 1.2) * 10
+            // Spawn ripple every ~12 ticks
+            let activeWords = words.isEmpty ? ["catch", "me", "up"] : words
+            if tick % UInt64.random(in: 10...16) == 0 {
+                let word = activeWords[Int.random(in: 0..<activeWords.count)]
+                let centerCol = Int.random(in: 2..<(cols - 2))
+                let centerRow = Int.random(in: 0..<rows)
+                let charOffset = centerRow * cols + max(0, centerCol - word.count / 2)
+                ripples.append(Ripple(
+                    centerCol: centerCol,
+                    centerRow: centerRow,
+                    word: word,
+                    bornTick: tick,
+                    charOffset: charOffset
+                ))
+            }
 
-        let cx = area.width * 0.5
-        let cy = area.height * 0.5
-        let x = cx + cos(angle) * maxRadiusX * r + jitterX
-        let y = cy + sin(angle) * maxRadiusY * r + jitterY
+            // Process ripples
+            var alive: [Ripple] = []
+            for ripple in ripples {
+                let age = Int(tick - ripple.bornTick)
+                guard age < 24 else { continue }
+                alive.append(ripple)
 
-        // Clamp so text doesn't clip outside the view
-        let padX = wordSize * 1.5
-        let padY = wordSize * 0.6
-        return CGPoint(
-            x: min(max(padX, x), area.width - padX),
-            y: min(max(padY, y), area.height - padY)
-        )
+                let radius = Double(age) * 0.9
+                let peak = 0.4 * (1.0 - Double(age) / 24.0)
+
+                // Word text at center — bright and readable
+                if age < 16 {
+                    let chars = Array(ripple.word)
+                    for (i, ch) in chars.enumerated() {
+                        let idx = ripple.charOffset + i
+                        guard idx >= 0, idx < cells.count else { continue }
+                        let b = peak * 3.0
+                        if b > cells[idx].brightness {
+                            cells[idx].char = ch
+                            cells[idx].brightness = b
+                        }
+                    }
+                }
+
+                // Expanding ring
+                for row in 0..<rows {
+                    for col in 0..<cols {
+                        let dx = Double(col - ripple.centerCol)
+                        let dy = Double(row - ripple.centerRow) * 2.0
+                        let dist = (dx * dx + dy * dy).squareRoot()
+                        let delta = abs(dist - radius)
+                        guard delta < 2.0 else { continue }
+                        let falloff = 1.0 - delta / 2.0
+                        let b = peak * falloff * 0.4
+                        let idx = row * cols + col
+                        guard idx < cells.count else { continue }
+                        if b > cells[idx].brightness {
+                            cells[idx].brightness = b
+                            if cells[idx].char == " " {
+                                cells[idx].char = "·"
+                            }
+                        }
+                    }
+                }
+            }
+            ripples = alive
+        }
     }
 
     private struct WordCloudEntry: Hashable {
         let text: String
-        let size: CGFloat
+        let size: CGFloat       // 8-16pt
         let weight: Font.Weight
-        let color: Color
-        let opacity: Double
+        let color: Color        // always neonCyan (kept for compatibility)
+        let opacity: Double     // 0.2-0.7
 
         func hash(into hasher: inout Hasher) { hasher.combine(text) }
         static func == (lhs: Self, rhs: Self) -> Bool { lhs.text == rhs.text }
+    }
+
+    /// Trigger AI keyword generation for the selected day.
+    private func triggerAIKeywords(for day: Date) {
+        let cal = Calendar.current
+        let y = cal.component(.year, from: day)
+        let m = cal.component(.month, from: day)
+        let d = cal.component(.day, from: day)
+        let folder = String(format: "%04d-%02d-%02d", y, m, d)
+        let txtURL = AppPaths().transcriptsRoot
+            .appendingPathComponent(folder)
+            .appendingPathComponent("day-transcript.txt")
+        let transcriptPath = FileManager.default.fileExists(atPath: txtURL.path) ? txtURL : nil
+
+        // Wait for calendar reload to finish before generating keywords
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            contextLoader.generateAIKeywords(
+                for: day,
+                calendarEvents: calendarService.currentEvents,
+                transcriptPath: transcriptPath
+            )
+        }
     }
 
     /// Word cloud for the entire day.
@@ -513,41 +639,29 @@ struct MainDashboardView: View {
         var freq: [String: (count: Int, color: Color)] = [:]
         let events = calendarService.currentEvents
 
-        // Calendar event titles + notes
+        let c = Theme.neonCyan
+
+        // Calendar event titles + notes (weight x3 — most important)
         for event in events {
             for w in tokenize(event.title) {
-                freq[w, default: (0, Theme.calendarAmber)].count += 2
+                freq[w, default: (0, c)].count += 3
             }
             if let notes = event.notePreview {
-                for w in tokenize(notes) {
-                    freq[w, default: (0, Theme.calendarAmber)].count += 1
-                }
-            }
-            if let loc = event.location, !loc.isEmpty {
-                for w in tokenize(loc) {
-                    freq[w, default: (0, Theme.calendarAmber)].count += 1
-                }
+                for w in tokenize(notes) { freq[w, default: (0, c)].count += 1 }
             }
         }
 
-        // Transcript words (cyan) — read the day's transcript file
-        let transcriptWords = loadTranscriptWords(for: selectedDay)
-        for w in transcriptWords {
-            freq[w, default: (0, Theme.neonCyan)].count += 1
+        // Transcript keywords — small sample, skip noise
+        for w in loadTranscriptWords(for: selectedDay).prefix(80) {
+            freq[w, default: (0, c)].count += 1
         }
 
-        // LEANN email chunks (violet)
+        // Email/chat titles
         for chunk in contextLoader.emailChunks {
-            for w in tokenize(chunk.body).prefix(20) {
-                freq[w, default: (0, Theme.emailViolet)].count += 1
-            }
+            for w in tokenize(chunk.title).prefix(4) { freq[w, default: (0, c)].count += 1 }
         }
-
-        // LEANN chat chunks (green)
         for chunk in contextLoader.chatChunks {
-            for w in tokenize(chunk.body).prefix(20) {
-                freq[w, default: (0, Theme.chatGreen)].count += 1
-            }
+            for w in tokenize(chunk.title).prefix(4) { freq[w, default: (0, c)].count += 1 }
         }
 
         return buildCloud(from: freq)
@@ -686,57 +800,19 @@ struct MainDashboardView: View {
         let sorted = freq.sorted { $0.value.count > $1.value.count }
         let maxCount = sorted.first?.value.count ?? 1
 
-        return sorted.prefix(15).map { key, value in
+        return sorted.prefix(10).map { key, value in
             let ratio = Double(value.count) / Double(max(maxCount, 1))
-            let size: CGFloat = 10 + ratio * 16  // 10pt to 26pt
-            let weight: Font.Weight = ratio > 0.6 ? .bold : ratio > 0.3 ? .semibold : .regular
-            let opacity = 0.4 + ratio * 0.5
+            let size: CGFloat = 9 + ratio * 5   // 9pt to 14pt
+            let weight: Font.Weight = ratio > 0.6 ? .semibold : .regular
+            let opacity = 0.25 + ratio * 0.4    // 0.25 to 0.65
 
             return WordCloudEntry(
                 text: key,
                 size: size,
                 weight: weight,
-                color: value.color,
+                color: Theme.neonCyan,
                 opacity: opacity
             )
-        }.shuffled()
-    }
-
-    // MARK: - Floating word cloud item
-
-    /// A single word that gently drifts around its base position.
-    private struct FloatingWord: View {
-        let text: String
-        let fontSize: CGFloat
-        let weight: Font.Weight
-        let color: Color
-        let opacity: Double
-        let basePosition: CGPoint
-        let index: Int
-
-        @State private var phase: Double = 0
-
-        var body: some View {
-            let dx = sin(phase + Double(index) * 1.3) * 4
-            let dy = cos(phase * 0.7 + Double(index) * 0.9) * 3
-
-            Text(text)
-                .font(.system(size: fontSize, weight: weight, design: .rounded))
-                .foregroundStyle(color.opacity(opacity))
-                .position(
-                    x: basePosition.x + dx,
-                    y: basePosition.y + dy
-                )
-                .onAppear {
-                    // Each word gets a unique slow animation cycle
-                    let duration = 3.0 + Double(index % 5) * 0.8
-                    withAnimation(
-                        .easeInOut(duration: duration)
-                        .repeatForever(autoreverses: true)
-                    ) {
-                        phase = .pi * 2
-                    }
-                }
         }
     }
 
@@ -912,7 +988,7 @@ struct MainDashboardView: View {
         return ContextDensityBinMapper.merge(
             recordingBins: baseBins,
             emailChunks: contextLoader.emailChunks,
-            chatChunks: contextLoader.chatChunks,
+            chatChunks: contextLoader.chatChunks + contextLoader.transcriptChunks,
             fileChunks: contextLoader.fileChunks,
             calendarEvents: calendarService.currentEvents,
             day: selectedDay

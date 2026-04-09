@@ -53,13 +53,14 @@ enum PromptTemplates {
     \(safetyBlockV1)
 
     Answering style:
-    - Lead with the answer, not the methodology.
+    - Lead with the answer, not the methodology. Be helpful and direct.
     - 2–4 sentences for simple questions. Up to 6 for questions that require synthesis
       across multiple sources.
     - Cite every factual claim with [N] where N matches the id attribute of the source tag.
     - If sources disagree, surface the disagreement explicitly rather than picking a winner.
-    - If the question asks about something not present in the sources, say
-      "I don't have anything about that in your indexed history" and do NOT guess.
+    - If the sources contain relevant information, even partially, share what you found.
+      Only say you have nothing if truly zero sources relate to the question.
+    - When sources are from different dates or contexts, synthesize them into a coherent answer.
     - Temperature is 0.2 — be precise, not creative.
 
     User's question follows in <user_content>. Available sources follow in numbered
