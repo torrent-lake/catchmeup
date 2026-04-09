@@ -47,8 +47,11 @@ enum ContextDensityBinMapper {
 
     // MARK: - Internal helpers
 
-    /// Count timestamped chunks per bin, then normalise to 0-1 using the
-    /// max count across the day (so the busiest bin = 1.0).
+    /// Apply density for chunks from a source. Two strategies:
+    /// 1. If chunks have timestamps matching this day → place in specific bins
+    /// 2. If no timestamps match → spread a uniform ambient density across
+    ///    bins that already have recording or calendar activity (so the color
+    ///    appears where there's "life" on the timeline, not on empty bins)
     private static func applyChunkDensity(
         chunks: [SourceChunk],
         dayStart: Date,
@@ -58,20 +61,36 @@ enum ContextDensityBinMapper {
         guard !chunks.isEmpty else { return }
         let dayEnd = dayStart.addingTimeInterval(TimeInterval(totalBins) * binDuration)
 
+        // Try timestamp-based placement first
         var counts = [Int](repeating: 0, count: totalBins)
+        var placed = 0
         for chunk in chunks {
             guard let ts = chunk.timestamp, ts >= dayStart, ts < dayEnd else { continue }
             let offset = ts.timeIntervalSince(dayStart)
             let index = min(totalBins - 1, max(0, Int(offset / binDuration)))
             counts[index] += 1
+            placed += 1
         }
 
-        let maxCount = counts.max() ?? 0
-        guard maxCount > 0 else { return }
-        let scale = 1.0 / Double(maxCount)
-        for i in bins.indices {
-            guard counts[i] > 0 else { continue }
-            bins[i][keyPath: keyPath] = min(1.0, Double(counts[i]) * scale)
+        if placed > 0 {
+            // Some chunks had valid timestamps → use precise placement
+            let maxCount = counts.max() ?? 0
+            guard maxCount > 0 else { return }
+            let scale = 1.0 / Double(maxCount)
+            for i in bins.indices {
+                guard counts[i] > 0 else { continue }
+                bins[i][keyPath: keyPath] = min(1.0, Double(counts[i]) * scale)
+            }
+        } else {
+            // No timestamps matched → ambient density on active bins
+            // Intensity based on how many chunks we got (more = brighter)
+            let intensity = min(0.6, Double(chunks.count) / 10.0 * 0.3)
+            for i in bins.indices {
+                let hasActivity = bins[i].status == .recorded || bins[i].calendarDensity > 0
+                if hasActivity {
+                    bins[i][keyPath: keyPath] = intensity
+                }
+            }
         }
     }
 
